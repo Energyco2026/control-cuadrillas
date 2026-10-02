@@ -308,17 +308,23 @@ $('grid').addEventListener('click',e=>{const b=e.target.closest('.cell');if(b)de
 async function detalle(tid,f){
   const t=D.trab.find(x=>x.id===tid),x=diaDe(tid,f),box=$('sheet-box');
   if(!x.ms.length){box.innerHTML=`<h2>${esc(t.nombre)} · ${f}</h2><p class="msg warn">No marcó este día.</p><button class="btn ghost" id="cl">Cerrar</button>`;$('sheet').hidden=false;$('cl').onclick=cerrar;return;}
-  box.innerHTML=`<h2>${esc(t.nombre)} · ${f}</h2>`+x.ms.map((m,i)=>{const o=obraPor(m.obra_id);return `
+  box.innerHTML=`<h2>${esc(t.nombre)} · ${f}</h2>
+    <div class="card"><strong>Foto de referencia</strong>${t.foto_ref_path?'<img id="imgRef" alt="Foto de referencia">':'<p class="msg warn">Esta persona aún no tiene foto de referencia. Usa una selfie que tú hayas visto tomar en persona.</p>'}</div>`+x.ms.map((m,i)=>{const o=obraPor(m.obra_id);return `
     <div class="card"><strong>${m.tipo==='entrada'?'Entrada':'Salida'} · ${horaLocal(m.marcado_en)}</strong>
     <img id="img${i}" alt="Selfie de ${esc(t.nombre)}">
+    <div><button class="btn ghost sm" data-ref="${esc(m.foto_path||'')}">Usar como foto de referencia</button></div>
     <dl class="kv"><dt>Obra</dt><dd>${o?esc(o.nombre)+' (PO '+esc(o.po||'—')+')':'Sin obra designada'}</dd>
     <dt>Distancia</dt><dd>${m.distancia_m!=null?m.distancia_m+' m '+(m.dentro?'· dentro':'· FUERA'):'—'}</dd>
-    <dt>Precisión GPS</dt><dd>${m.precision_m!=null?Math.round(m.precision_m)+' m':'—'}</dd>
+    <dt>Precisión GPS</dt><dd>${m.precision_m!=null?Math.round(m.precision_m)+' m'+(m.precision_m>100?' · <span class="tag st-bad">ubicación aproximada</span>':''):'—'}</dd>
     <dt>Ubicación</dt><dd><a href="https://www.google.com/maps?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Ver en Google Maps</a></dd>
     <dt>Equipo</dt><dd>${esc((m.dispositivo||'').split(' · ')[0])}</dd><dt>Revisión</dt><dd>${m.revision}</dd></dl></div>`;}).join('')+
     `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="aprob">Aprobar día</button><button class="btn danger" id="rech">Rechazar día</button><button class="btn ghost" id="cl">Cerrar</button></div>`;
   $('sheet').hidden=false;$('cl').onclick=cerrar;
   x.ms.forEach(async(m,i)=>{if(!m.foto_path)return;const {data}=await sb.storage.from('asis-selfies').createSignedUrl(m.foto_path,600);if(data)$('img'+i).src=data.signedUrl;});
+  if(t.foto_ref_path){sb.storage.from('asis-selfies').createSignedUrl(t.foto_ref_path,600).then(({data})=>{if(data&&$('imgRef'))$('imgRef').src=data.signedUrl;});}
+  box.querySelectorAll('[data-ref]').forEach(b=>b.onclick=async()=>{if(!b.dataset.ref)return;
+    const {error}=await sb.from('asis_trabajadores').update({foto_ref_path:b.dataset.ref}).eq('id',tid);
+    if(error)return toast(error.message);t.foto_ref_path=b.dataset.ref;toast('Foto de referencia guardada');detalle(tid,f);});
   const rev=async v=>{const {data:{user}}=await sb.auth.getUser();const {error}=await sb.from('asis_marcaciones').update({revision:v,revisado_por:user.id}).in('id',x.ms.map(m=>m.id));
     if(error)return toast('No se pudo guardar: '+error.message);cerrar();toast(v==='aprobado'?'Día aprobado':'Día rechazado');cargar();};
   $('aprob').onclick=()=>rev('aprobado');$('rech').onclick=()=>rev('rechazado');
@@ -408,7 +414,7 @@ function cedulaOk(c){if(!/^\d{10}$/.test(c))return false;let s=0;for(let i=0;i<9
 function pinNuevo(){let p;do{p=String(Math.floor(Math.random()*10000)).padStart(4,'0');}while(new Set(p).size<3);return p;}
 function pintarPersonal(){
   const ts=[...D.trab].sort((a,b)=>(b.activo-a.activo)||a.nombre.localeCompare(b.nombre));
-  let h=`<thead><tr><th>Nombre</th><th>Cédula</th><th>Rol</th><th>Tarifa</th><th>Cuenta</th><th>Aprobado</th><th>Activo</th><th>PIN</th></tr></thead><tbody>`;
+  let h=`<thead><tr><th>Nombre</th><th>Cédula</th><th>Rol</th><th>Tarifa</th><th>Cuenta</th><th>Aprobado</th><th>Activo</th><th>PIN</th><th>Foto ref.</th></tr></thead><tbody>`;
   ts.forEach(t=>{const cv=t.cedula&&!cedulaOk(t.cedula);
     h+=`<tr style="${t.activo?'':'opacity:.55'}"><td>${esc(t.nombre)}${t.nombre_corto?'<br><span class="meta">En costos: '+esc(t.nombre_corto)+'</span>':''}</td>
     <td class="mono">${esc(t.cedula||'—')}${cv?' <span class="tag st-bad">revisar</span>':''}</td><td>${esc(t.rol)}</td>
@@ -416,7 +422,7 @@ function pintarPersonal(){
     <td><input type="checkbox" data-cta="${t.id}" ${t.tiene_cuenta?'checked':''} aria-label="Tiene cuenta"></td>
     <td><input type="checkbox" data-apr="${t.id}" ${t.aprobado_rrhh?'checked':''} aria-label="Aprobado"></td>
     <td><input type="checkbox" data-actv="${t.id}" ${t.activo?'checked':''} aria-label="Activo"></td>
-    <td><button class="btn ghost sm" data-pin="${t.id}">${t.pin_hash?'Nuevo PIN':'Generar PIN'}</button></td></tr>`;});
+    <td><button class="btn ghost sm" data-pin="${t.id}">${t.pin_hash?'Nuevo PIN':'Generar PIN'}</button></td><td>${t.foto_ref_path?'<span class="tag st-ok">Sí</span>':'<span class="tag st-warn">Falta</span>'}</td></tr>`;});
   $('t-pers').innerHTML=h+'</tbody>';
   const upd=async(id,obj)=>{const {error}=await sb.from('asis_trabajadores').update(obj).eq('id',id);toast(error?error.message:'Guardado');if(!error){Object.assign(D.trab.find(t=>t.id===id),obj);}};
   $('t-pers').querySelectorAll('[data-tar]').forEach(i=>i.onchange=()=>upd(Number(i.dataset.tar),{tarifa_diaria:Number(i.value)}));
