@@ -70,6 +70,11 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
       <button type="button" class="in" id="b-in" aria-pressed="false">ENTRADA</button>
       <button type="button" class="out" id="b-out" aria-pressed="false">SALIDA</button>
     </div>
+    <div class="msg ok" id="aviso" hidden style="color:var(--ink)">
+      <strong>Solo la primera vez:</strong> el celular te va a pedir permiso para usar la <b>cámara</b> y la <b>ubicación</b>.
+      Es normal. Elige <b>"Precisa"</b> y luego <b>"Permitir al visitar el sitio"</b>.
+      Si eliges "Aproximado", no vas a poder marcar.
+    </div>
     <p class="msg bad" id="err1" hidden></p>
     <button class="btn" id="seguir">Tomar selfie</button>
   </section>
@@ -112,6 +117,7 @@ const PRECISION_MAX=100; // metros: más que esto no se acepta (ubicación aprox
 let equipo='';
 try{equipo=localStorage.getItem('asis_equipo')||'';if(!equipo){equipo='EQ-'+Math.random().toString(36).slice(2,8).toUpperCase();localStorage.setItem('asis_equipo',equipo);}}catch(e){equipo='EQ-sin-id';}
 
+try{$('aviso').hidden=localStorage.getItem('asis_permisos_ok')==='1';}catch(e){$('aviso').hidden=false;}
 setInterval(()=>{$('reloj').textContent=new Date().toLocaleString('es-EC',{weekday:'long',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});},1000);
 
 function setTipo(t){tipo=t;$('b-in').setAttribute('aria-pressed',t==='entrada');$('b-out').setAttribute('aria-pressed',t==='salida');}
@@ -194,7 +200,7 @@ $('enviar').onclick=async()=>{
     if(error) throw new Error('No se pudo registrar. Revisa tu conexión de datos e intenta otra vez.');
     if(!data.ok){err('err2',data.error);b.disabled=false;b.textContent='Enviar';
       if(/PIN|Cédula/i.test(data.error)){pararCamara();pararGPS();ir(1);err('err1',data.error);} return;}
-    pararCamara();pararGPS();mostrar(data);
+    pararCamara();pararGPS();try{localStorage.setItem('asis_permisos_ok','1');$('aviso').hidden=true;}catch(e){}mostrar(data);
   }catch(e){err('err2',e.message);}
   b.disabled=false;b.textContent='Enviar';
 };
