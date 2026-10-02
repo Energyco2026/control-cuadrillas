@@ -38,7 +38,8 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
 .btn.ghost{background:transparent;color:var(--accent);border:2px solid var(--accent)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .cam{position:relative;width:100%;aspect-ratio:3/4;background:#0d1512;border-radius:12px;overflow:hidden}
-.cam video,.cam img{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.cam video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.cam img{width:100%;height:100%;object-fit:contain;background:#0d1512}
 .cam img{transform:none}
 .cam .oval{position:absolute;inset:12% 18%;border:3px dashed rgba(255,255,255,.55);border-radius:50%;pointer-events:none}
 .gps{font-size:13px;display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--bg)}
@@ -105,6 +106,7 @@ const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSI
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:false}});
 const $=id=>document.getElementById(id);
 let tipo=null, stream=null, blob=null, pos=null, gpsWatch=null;
+const PRECISION_MAX=100; // metros: más que esto no se acepta (ubicación aproximada)
 
 // Identificador del equipo (para saber desde qué celular se marcó)
 let equipo='';
@@ -150,8 +152,9 @@ function iniciarGPS(){
   gpsWatch=navigator.geolocation.watchPosition(p=>{
     if(!pos||p.coords.accuracy<pos.coords.accuracy) pos=p;
     const a=Math.round(pos.coords.accuracy);
-    g.className='gps '+(a<=60?'ok':'');
-    $('gpsTxt').textContent=a<=60?`Ubicación lista (precisión ${a} m)`:`Mejorando ubicación… precisión ${a} m`;
+    if(a>PRECISION_MAX){g.className='gps bad';
+      $('gpsTxt').textContent=a>500?`Ubicación aproximada (${a} m). Activa "Ubicación precisa" en los permisos del navegador y recarga la página.`:`Mejorando ubicación… precisión ${a} m. Sal al aire libre o espera unos segundos.`;}
+    else{g.className='gps ok';$('gpsTxt').textContent=`Ubicación lista (precisión ${a} m)`;}
   },e=>{
     g.className='gps bad';
     $('gpsTxt').textContent=e.code===1?'Ubicación bloqueada. Activa el permiso de ubicación para esta página.':'No se pudo obtener la ubicación. Activa el GPS.';
@@ -167,8 +170,9 @@ $('disparar').onclick=()=>{
   const ctx=cv.getContext('2d');ctx.translate(W,0);ctx.scale(-1,1);ctx.drawImage(v,0,0,W,H);
   ctx.setTransform(1,0,0,1,0,0);
   // Sello visible en la foto
-  const t=new Date().toLocaleString('es-EC');ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(0,H-28,W,28);
-  ctx.fillStyle='#fff';ctx.font='14px monospace';ctx.fillText(t+'  '+(tipo||''),8,H-9);
+  const n=new Date(),t=n.toLocaleDateString('es-EC')+' '+n.toLocaleTimeString('es-EC',{hour:'2-digit',minute:'2-digit',hour12:false});
+  ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,H-30,W,30);
+  ctx.fillStyle='#fff';ctx.font='bold 16px monospace';ctx.fillText(t+'  '+(tipo||'').toUpperCase(),10,H-10);
   cv.toBlob(b=>{blob=b;$('foto').src=URL.createObjectURL(b);$('foto').hidden=false;$('video').hidden=true;$('oval').hidden=true;
     $('acciones1').hidden=true;$('acciones2').hidden=false;},'image/jpeg',0.72);
 };
@@ -178,6 +182,7 @@ $('cancelar').onclick=()=>{pararCamara();pararGPS();ir(1);};
 $('enviar').onclick=async()=>{
   if(!blob) return err('err2','Primero toma la foto.');
   if(!pos) return err('err2','Todavía no hay ubicación. Espera unos segundos con el GPS activado.');
+  if(pos.coords.accuracy>PRECISION_MAX) return err('err2',`La ubicación no es precisa (${Math.round(pos.coords.accuracy)} m). Si elegiste "Aproximada", cambia el permiso a "Precisa" en el candado junto a la dirección de la página y recarga.`);
   const b=$('enviar');b.disabled=true;b.textContent='Enviando…';err('err2','');
   try{
     const hoy=new Date().toISOString().slice(0,10);
