@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
   --bg:#F3F5F4; --surface:#FFFFFF; --ink:#16231F; --muted:#5D6B66; --line:#DCE3E0;
@@ -117,11 +118,18 @@ a{color:var(--accent)}
 
     <!-- ASISTENCIA -->
     <section class="panel" id="p-asis" hidden style="margin-top:16px">
+      <div class="bar">
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <label class="fld" for="f-cua">Cuadrilla<select id="f-cua"></select></label>
+          <label class="fld" for="f-emp">Empleado<select id="f-emp"></select></label>
+        </div>
+        <button class="btn" id="excel">Descargar Excel</button>
+      </div>
       <div class="kpis" id="kpis"></div>
       <div class="bar"><h2>Asistencia de la semana</h2>
         <span class="meta"><span class="tag st-ok">Válido</span> <span class="tag st-warn">Falta marcación</span> <span class="tag st-bad">Fuera de obra</span> <span class="tag st-off">No marcó</span></span></div>
       <div class="scroll"><table id="grid"></table></div>
-      <div class="bar"><h2>Pago de la semana</h2><button class="btn" id="copiar">Copiar para Excel</button></div>
+      <div class="bar"><h2>Pago de la semana</h2></div>
       <div class="scroll"><table id="pago"></table></div>
       <p class="meta">Se pagan los días con entrada y salida dentro de la obra, o aprobados por RR.HH. Toca un día para ver la selfie y aprobar o rechazar.</p>
     </section>
@@ -276,8 +284,23 @@ function quienesSemana(){
   return D.trab.filter(t=>ids.has(t.id));
 }
 function grupoDe(t){const a=D.asig.find(a=>a.asis_asignacion_personas.some(p=>p.trabajador_id===t.id));return a?`${cuadPor(a.cuadrilla_id).nombre} · ${obraPor(a.obra_id)?.nombre||''} (PO ${obraPor(a.obra_id)?.po||'—'})`:'Sin designación esta semana';}
+let FILT={cua:'',emp:''};
+function cuaDe(t){const a=D.asig.find(a=>a.asis_asignacion_personas.some(p=>p.trabajador_id===t.id));return a?cuadPor(a.cuadrilla_id).nombre:'Sin designación';}
+function obraDeT(t){const a=D.asig.find(a=>a.asis_asignacion_personas.some(p=>p.trabajador_id===t.id));return a?obraPor(a.obra_id):null;}
+function filtrados(){return quienesSemana().filter(t=>(!FILT.cua||cuaDe(t)===FILT.cua)&&(!FILT.emp||String(t.id)===FILT.emp));}
+function pintarFiltros(){
+  const todos=quienesSemana(),cuas=[...new Set(todos.map(cuaDe))].sort();
+  if(FILT.cua&&!cuas.includes(FILT.cua))FILT.cua='';
+  $('f-cua').innerHTML='<option value="">Todas</option>'+cuas.map(c=>`<option ${c===FILT.cua?'selected':''}>${esc(c)}</option>`).join('');
+  const emps=todos.filter(t=>!FILT.cua||cuaDe(t)===FILT.cua);
+  if(FILT.emp&&!emps.some(t=>String(t.id)===FILT.emp))FILT.emp='';
+  $('f-emp').innerHTML='<option value="">Todos</option>'+emps.map(t=>`<option value="${t.id}" ${String(t.id)===FILT.emp?'selected':''}>${esc(t.nombre)}</option>`).join('');
+}
+$('f-cua').onchange=()=>{FILT.cua=$('f-cua').value;FILT.emp='';pintarAsistencia();};
+$('f-emp').onchange=()=>{FILT.emp=$('f-emp').value;pintarAsistencia();};
 function pintarAsistencia(){
-  const ds=diasSemana(),gente=quienesSemana();
+  pintarFiltros();
+  const ds=diasSemana(),gente=filtrados();
   const grupos={};gente.forEach(t=>{(grupos[grupoDe(t)]=grupos[grupoDe(t)]||[]).push(t);});
   let h=`<thead><tr><th>Trabajador</th>${ds.map(d=>`<th>${d.toLocaleDateString('es-EC',{weekday:'short',day:'numeric'})}</th>`).join('')}<th class="num">Horas</th></tr></thead><tbody>`;
   let val=0,rev=0,tot=0;
@@ -318,7 +341,7 @@ async function detalle(tid,f){
     <dt>Precisión GPS</dt><dd>${m.precision_m!=null?Math.round(m.precision_m)+' m'+(m.precision_m>100?' · <span class="tag st-bad">ubicación aproximada</span>':''):'—'}</dd>
     <dt>Ubicación</dt><dd><a href="https://www.google.com/maps?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Ver en Google Maps</a></dd>
     <dt>Equipo</dt><dd>${esc((m.dispositivo||'').split(' · ')[0])}</dd><dt>Revisión</dt><dd>${m.revision}</dd></dl></div>`;}).join('')+
-    `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="aprob">Aprobar día</button><button class="btn danger" id="rech">Rechazar día</button><button class="btn ghost" id="cl">Cerrar</button></div>`;
+    `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="aprob">Aprobar día</button><button class="btn danger" id="rech">Rechazar día</button>${t.es_prueba?'<button class="btn danger" id="borrar">Borrar (prueba)</button>':''}<button class="btn ghost" id="cl">Cerrar</button></div>`;
   $('sheet').hidden=false;$('cl').onclick=cerrar;
   x.ms.forEach(async(m,i)=>{if(!m.foto_path)return;const {data}=await sb.storage.from('asis-selfies').createSignedUrl(m.foto_path,600);if(data)$('img'+i).src=data.signedUrl;});
   if(t.foto_ref_path){sb.storage.from('asis-selfies').createSignedUrl(t.foto_ref_path,600).then(({data})=>{if(data&&$('imgRef'))$('imgRef').src=data.signedUrl;});}
@@ -328,14 +351,44 @@ async function detalle(tid,f){
   const rev=async v=>{const {data:{user}}=await sb.auth.getUser();const {error}=await sb.from('asis_marcaciones').update({revision:v,revisado_por:user.id}).in('id',x.ms.map(m=>m.id));
     if(error)return toast('No se pudo guardar: '+error.message);cerrar();toast(v==='aprobado'?'Día aprobado':'Día rechazado');cargar();};
   $('aprob').onclick=()=>rev('aprobado');$('rech').onclick=()=>rev('rechazado');
+  if($('borrar'))$('borrar').onclick=async()=>{const bt=$('borrar');
+    if(bt.dataset.ok!=='1'){bt.dataset.ok='1';bt.textContent='Toca otra vez para borrar';return;}
+    const fotos=x.ms.map(m=>m.foto_path).filter(Boolean);
+    const {data,error}=await sb.from('asis_marcaciones').delete().in('id',x.ms.map(m=>m.id)).select('id');
+    if(error)return toast('No se pudo borrar: '+error.message);
+    if(!data||!data.length)return toast('No se borró nada: solo se pueden borrar marcaciones de personas de prueba.');
+    if(fotos.length)await sb.storage.from('asis-selfies').remove(fotos);
+    cerrar();toast('Marcaciones de prueba borradas');cargar();};
 }
 function cerrar(){$('sheet').hidden=true;}
 $('sheet').addEventListener('click',e=>{if(e.target.id==='sheet')cerrar();});
-$('copiar').onclick=()=>{
-  const ds=diasSemana(),rows=[['Trabajador','Cédula','Cuadrilla / Obra','Días válidos','Tarifa','A pagar','Forma de pago']];
-  quienesSemana().forEach(t=>{let v=0;ds.forEach(d=>{if(diaDe(t.id,ymd(d)).est==='ok')v++;});rows.push([t.nombre,t.cedula||'',grupoDe(t),v,t.tarifa_diaria,v*t.tarifa_diaria,t.tiene_cuenta?'Transferencia':'Anticipo']);});
-  const tsv=rows.map(r=>r.join('\t')).join('\n');
-  navigator.clipboard.writeText(tsv).then(()=>toast('Copiado. Pégalo en Excel.'),()=>toast('No se pudo copiar.'));
+const EST={ok:'Válido',warn:'Falta marcación',bad:'Fuera de obra',off:'No marcó'};
+$('excel').onclick=()=>{
+  if(typeof XLSX==='undefined')return toast('No se cargó el generador de Excel. Revisa tu conexión y recarga.');
+  const ds=diasSemana(),gente=filtrados(),hl=ts=>ts?horaLocal(ts):'';
+  const resumen=[],detalle=[],marcas=[];
+  gente.forEach(t=>{
+    const o=obraDeT(t);let v=0,r=0,hs=0;
+    ds.forEach(d=>{const f=ymd(d),x=diaDe(t.id,f);
+      if(x.est==='ok'){v++;hs+=x.h||0;}else if(x.est!=='off')r++;
+      detalle.push({'Fecha':f,'Día':d.toLocaleDateString('es-EC',{weekday:'long'}),'Cuadrilla':cuaDe(t),'Obra':o?o.nombre:'','PO':o?o.po||'':'','Trabajador':t.nombre,'Cédula':t.cedula||'',
+        'Entrada':x.ent?hl(x.ent.marcado_en):'','Salida':x.sal?hl(x.sal.marcado_en):'','Horas':x.h?Number(x.h.toFixed(2)):0,'Estado':x.ap?'Aprobado por RR.HH.':EST[x.est],
+        'Pagable':x.est==='ok'?'Sí':'No','Valor':x.est==='ok'?Number(t.tarifa_diaria):0});
+      x.ms.forEach(m=>{const om=obraPor(m.obra_id);marcas.push({'Fecha':f,'Hora':hl(m.marcado_en),'Tipo':m.tipo,'Trabajador':t.nombre,'Cédula':t.cedula||'','Cuadrilla':cuaDe(t),
+        'Obra':om?om.nombre:'Sin obra','PO':om?om.po||'':'','Distancia (m)':m.distancia_m,'Dentro de obra':m.dentro==null?'':(m.dentro?'Sí':'No'),
+        'Precisión GPS (m)':m.precision_m!=null?Math.round(m.precision_m):'','Latitud':m.lat,'Longitud':m.lng,'Revisión':m.revision,'Equipo':(m.dispositivo||'').split(' · ')[0]});});
+    });
+    resumen.push({'Cuadrilla':cuaDe(t),'Obra':o?o.nombre:'','PO':o?o.po||'':'','Trabajador':t.nombre,'Cédula':t.cedula||'','Rol':t.rol,'Días válidos':v,'Por revisar':r,
+      'Horas':Number(hs.toFixed(2)),'Tarifa diaria':Number(t.tarifa_diaria),'A pagar':v*t.tarifa_diaria,'Forma de pago':t.tiene_cuenta?'Transferencia':'Anticipo (sin cuenta)'});
+  });
+  if(!resumen.length)return toast('No hay datos para descargar con estos filtros.');
+  const wb=XLSX.utils.book_new();
+  const hoja=(rows,nombre,anchos)=>{const ws=XLSX.utils.json_to_sheet(rows);ws['!autofilter']={ref:ws['!ref']};ws['!cols']=anchos.map(w=>({wch:w}));XLSX.utils.book_append_sheet(wb,ws,nombre);};
+  hoja(resumen,'Resumen pago',[22,24,8,34,12,10,12,11,8,12,10,20]);
+  hoja(detalle,'Detalle diario',[11,11,22,24,8,34,12,8,8,7,20,8,8]);
+  hoja(marcas.length?marcas:[{'Fecha':'Sin marcaciones'}],'Marcaciones',[11,7,8,34,12,22,24,8,12,13,15,11,11,10,12]);
+  const sufijo=(FILT.cua?'_'+FILT.cua:'')+(FILT.emp?'_'+(D.trab.find(t=>String(t.id)===FILT.emp)||{}).nombre:'');
+  XLSX.writeFile(wb,`Asistencia_${ymd(ds[0])}_a_${ymd(ds[6])}${sufijo}.xlsx`.replace(/[\\/:*?"<>|]/g,'').replace(/\s+/g,'_'));
 };
 
 // ---------- Designación ----------
