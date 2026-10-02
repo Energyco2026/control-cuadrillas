@@ -170,6 +170,10 @@ a{color:var(--accent)}
         <p class="msg" id="o-msg" hidden></p>
         <div><button class="btn" id="o-guardar">Guardar obra</button></div>
       </div>
+      <div class="bar"><h2>Obras</h2><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input id="o-busq" placeholder="Buscar por nombre, PO o cliente" style="min-width:240px">
+        <label class="chk" for="o-solo"><input type="checkbox" id="o-solo" checked>Solo activas</label></div></div>
+      <p class="meta">Las obras llegan solas desde Odoo (cuentas analíticas). Tú solo pegas la ubicación de las que van a tener cuadrilla.</p>
       <div class="scroll"><table id="t-obras"></table></div>
     </section>
 
@@ -405,7 +409,8 @@ function pintarDesignacion(){
     if(b.dataset.ok!=='1'){b.dataset.ok='1';b.textContent='Toca otra vez para confirmar';return;}
     const {error}=await sb.from('asis_asignaciones').delete().eq('id',Number(b.dataset.del));if(error)return toast(error.message);toast('Designación quitada');cargar();});
   $('d-cua').innerHTML=D.cuad.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('')+'<option value="nueva">+ Cuadrilla nueva…</option>';
-  $('d-obra').innerHTML=D.obras.filter(o=>o.activa).map(o=>`<option value="${o.id}" ${o.lat==null?'disabled':''}>${esc(o.nombre)} · PO ${esc(o.po||'—')}${o.lat==null?' (sin ubicación)':''}</option>`).join('')||'<option value="">No hay obras con ubicación</option>';
+  const conUb=D.obras.filter(o=>o.activa&&o.lat!=null).sort((a,b)=>String(b.po||'').localeCompare(String(a.po||''),undefined,{numeric:true}));
+  $('d-obra').innerHTML=conUb.map(o=>`<option value="${o.id}">PO ${esc(o.po||'—')} · ${esc(o.nombre)}${o.cliente?' · '+esc(o.cliente):''}</option>`).join('')||'<option value="">Ninguna obra tiene ubicación todavía. Pídele a RR.HH. que la registre.</option>';
   pintarChecks();
 }
 $('d-cua').onchange=()=>{$('d-cua-n-w').hidden=$('d-cua').value!=='nueva';};
@@ -450,18 +455,33 @@ $('o-guardar').onclick=async()=>{
   msg('o-msg',`Obra guardada en ${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}.${c.ec?'':' Ojo: esas coordenadas quedan fuera de Ecuador.'}`,c.ec?'ok':'warn');
   ['o-nm','o-po','o-loc','o-dir'].forEach(id=>$(id).value='');cargar();
 };
+let OBUSQ='',OSOLO=true;
 function pintarObras(){
-  let h=`<thead><tr><th>Obra</th><th>PO</th><th>Coordenadas</th><th>Radio</th><th>Activa</th><th></th></tr></thead><tbody>`;
-  D.obras.forEach(o=>{h+=`<tr><td>${esc(o.nombre)}<br><span class="meta">${esc(o.direccion||'')}</span></td><td class="mono">${esc(o.po||'—')}</td>
-    <td class="mono">${o.lat!=null?o.lat.toFixed(5)+', '+o.lng.toFixed(5):'<span class="tag st-warn">Falta</span>'}</td>
+  const q=OBUSQ.toLowerCase();
+  const lista=D.obras.filter(o=>(!OSOLO||o.activa)&&(!q||`${o.nombre} ${o.po||''} ${o.cliente||''}`.toLowerCase().includes(q)))
+    .sort((a,b)=>(a.lat==null)-(b.lat==null)||String(b.po||'').localeCompare(String(a.po||''),undefined,{numeric:true}));
+  let h=`<thead><tr><th>Obra</th><th>PO</th><th>Ubicación</th><th>Radio</th><th>Activa</th></tr></thead><tbody>`;
+  lista.slice(0,150).forEach(o=>{h+=`<tr><td>${esc(o.nombre)}<br><span class="meta">${esc(o.cliente||o.direccion||'')}${o.origen==='odoo'?' · Odoo':''}</span></td><td class="mono">${esc(o.po||'—')}</td>
+    <td>${o.lat!=null?`<span class="mono">${o.lat.toFixed(5)}, ${o.lng.toFixed(5)}</span><br><a href="https://www.google.com/maps?q=${o.lat},${o.lng}" target="_blank" rel="noopener">Ver mapa</a> · <button class="btn ghost sm" data-cambiar="${o.id}">Cambiar</button>`
+      :`<div style="display:flex;gap:6px;flex-wrap:wrap"><input class="mono" data-loc="${o.id}" placeholder="Pega coordenadas" style="width:190px"><button class="btn sm" data-gloc="${o.id}">Guardar</button></div>`}</td>
     <td><select data-rad="${o.id}">${[100,150,200,300,500].map(r=>`<option ${r===o.radio_m?'selected':''}>${r}</option>`).join('')}</select> m</td>
-    <td><input type="checkbox" data-act="${o.id}" ${o.activa?'checked':''} aria-label="Obra activa"></td>
-    <td>${o.lat!=null?`<a href="https://www.google.com/maps?q=${o.lat},${o.lng}" target="_blank" rel="noopener">Ver mapa</a>`:''}</td></tr>`;});
-  $('t-obras').innerHTML=h+(D.obras.length?'':'<tr><td colspan="6" class="meta">Aún no hay obras.</td></tr>')+'</tbody>';
+    <td><input type="checkbox" data-act="${o.id}" ${o.activa?'checked':''} aria-label="Obra activa"></td></tr>`;});
+  const extra=lista.length>150?`<tr><td colspan="5" class="meta">Mostrando 150 de ${lista.length}. Usa el buscador.</td></tr>`:'';
+  $('t-obras').innerHTML=h+(lista.length?extra:'<tr><td colspan="5" class="meta">No hay obras con ese filtro.</td></tr>')+'</tbody>';
   $('t-obras').querySelectorAll('[data-rad]').forEach(s=>s.onchange=async()=>{const {error}=await sb.from('asis_obras').update({radio_m:Number(s.value)}).eq('id',Number(s.dataset.rad));toast(error?error.message:'Radio actualizado');});
   $('t-obras').querySelectorAll('[data-act]').forEach(s=>s.onchange=async()=>{const {error}=await sb.from('asis_obras').update({activa:s.checked}).eq('id',Number(s.dataset.act));toast(error?error.message:'Guardado');cargar();});
+  $('t-obras').querySelectorAll('[data-gloc]').forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.gloc);
+    const c=leerCoords($('t-obras').querySelector(`[data-loc="${id}"]`).value);if(c.err)return toast(c.err);
+    const {error}=await sb.from('asis_obras').update({lat:c.lat,lng:c.lng}).eq('id',id);
+    toast(error?error.message:(c.ec?'Ubicación guardada':'Guardada, pero ojo: queda fuera de Ecuador'));cargar();});
+  $('t-obras').querySelectorAll('[data-cambiar]').forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.cambiar);
+    const td=b.closest('td');td.innerHTML=`<div style="display:flex;gap:6px;flex-wrap:wrap"><input class="mono" data-loc="${id}" placeholder="Nuevas coordenadas" style="width:190px"><button class="btn sm" data-gloc2="${id}">Guardar</button></div>`;
+    td.querySelector('[data-gloc2]').onclick=async()=>{const c=leerCoords(td.querySelector('input').value);if(c.err)return toast(c.err);
+      const {error}=await sb.from('asis_obras').update({lat:c.lat,lng:c.lng}).eq('id',id);toast(error?error.message:'Ubicación actualizada');cargar();};});
 }
 
+$('o-busq').oninput=e=>{OBUSQ=e.target.value;pintarObras();};
+$('o-solo').onchange=e=>{OSOLO=e.target.checked;pintarObras();};
 // ---------- Personal ----------
 function cedulaOk(c){if(!/^\d{10}$/.test(c))return false;let s=0;for(let i=0;i<9;i++){let v=+c[i]*(i%2===0?2:1);s+=v>9?v-9:v;}return (10-s%10)%10===+c[9];}
 function pinNuevo(){let p;do{p=String(Math.floor(Math.random()*10000)).padStart(4,'0');}while(new Set(p).size<3);return p;}
