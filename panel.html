@@ -103,7 +103,7 @@ a{color:var(--accent)}
     <nav class="tabs" role="tablist" id="tabs">
       <button class="tab" data-p="p-asis" data-rol="rrhh">Asistencia y pago</button>
       <button class="tab" data-p="p-des" data-rol="rrhh asignador">Designación</button>
-      <button class="tab" data-p="p-obras" data-rol="rrhh">Obras y GPS</button>
+      <button class="tab" data-p="p-obras" data-rol="rrhh asignador">Obras y GPS</button>
       <button class="tab" data-p="p-pers" data-rol="rrhh">Personal</button>
     </nav>
 
@@ -275,7 +275,8 @@ async function cargar(){
   const r=await Promise.all(q);
   const e=r.find(x=>x.error); if(e){toast('Error al cargar: '+e.error.message);return;}
   D.trab=r[0].data;D.obras=r[1].data;D.cuad=r[2].data;D.asig=r[3].data;D.marc=ROL==='rrhh'?r[4].data:[];
-  if(ROL==='rrhh'){pintarAsistencia();pintarObras();pintarListaObras();pintarPersonal();}
+  if(ROL==='rrhh'){pintarAsistencia();pintarPersonal();}
+  pintarObras();pintarListaObras();if(ROL!=='rrhh'){const d=document.querySelector('#p-obras details');if(d)d.hidden=true;[...$('o-rad').options].forEach(o=>{if(Number(o.value)>300)o.remove();});}
   pintarDesignacion();
 }
 
@@ -489,10 +490,10 @@ function pintarObras(){
     .sort((a,b)=>(a.lat==null)-(b.lat==null)||String(b.po||'').localeCompare(String(a.po||''),undefined,{numeric:true}));
   let h=`<thead><tr><th>Obra</th><th>PO</th><th>Ubicación</th><th>Radio</th><th>Activa</th></tr></thead><tbody>`;
   lista.slice(0,150).forEach(o=>{h+=`<tr><td>${esc(o.nombre)}<br><span class="meta">${esc(o.cliente||o.direccion||'')}${o.origen==='odoo'?' · Odoo':''}</span></td><td class="mono">${esc(o.po||'—')}</td>
-    <td>${o.lat!=null?`<span class="mono">${o.lat.toFixed(5)}, ${o.lng.toFixed(5)}</span><br><a href="https://www.google.com/maps?q=${o.lat},${o.lng}" target="_blank" rel="noopener">Ver mapa</a> · <button class="btn ghost sm" data-cambiar="${o.id}">Cambiar</button>`
+    <td>${o.lat!=null?`<span class="mono">${o.lat.toFixed(5)}, ${o.lng.toFixed(5)}</span><br><a href="https://www.google.com/maps?q=${o.lat},${o.lng}" target="_blank" rel="noopener">Ver mapa</a> · <button class="btn ghost sm" data-cambiar="${o.id}">Cambiar</button>${ROL==='rrhh'?` · <button class="btn ghost sm" data-hist="${o.id}">Historial</button>`:''}${o.ubicado_por?`<br><span class="meta">Ubicada por ${esc(o.ubicado_por)} · ${new Date(o.ubicado_en).toLocaleString('es-EC',{timeZone:'America/Guayaquil',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span>`:''}`
       :`<div style="display:flex;gap:6px;flex-wrap:wrap"><input class="mono" data-loc="${o.id}" placeholder="Pega coordenadas" style="width:190px"><button class="btn sm" data-gloc="${o.id}">Guardar</button></div>`}</td>
-    <td><select data-rad="${o.id}">${[100,150,200,300,500].map(r=>`<option ${r===o.radio_m?'selected':''}>${r}</option>`).join('')}</select> m</td>
-    <td><input type="checkbox" data-act="${o.id}" ${o.activa?'checked':''} aria-label="Obra activa"></td></tr>`;});
+    <td><select data-rad="${o.id}">${(ROL==='rrhh'?[100,150,200,300,500]:[100,150,200,300]).map(r=>`<option ${r===o.radio_m?'selected':''}>${r}</option>`).join('')}</select> m</td>
+    <td><input type="checkbox" data-act="${o.id}" ${o.activa?'checked':''} ${ROL==='rrhh'?'':'disabled'} aria-label="Obra activa"></td></tr>`;});
   const extra=lista.length>150?`<tr><td colspan="5" class="meta">Mostrando 150 de ${lista.length}. Usa el buscador.</td></tr>`:'';
   $('t-obras').innerHTML=h+(lista.length?extra:'<tr><td colspan="5" class="meta">No hay obras con ese filtro.</td></tr>')+'</tbody>';
   $('t-obras').querySelectorAll('[data-rad]').forEach(s=>s.onchange=async()=>{const {error}=await sb.from('asis_obras').update({radio_m:Number(s.value)}).eq('id',Number(s.dataset.rad));toast(error?error.message:'Radio actualizado');});
@@ -501,6 +502,11 @@ function pintarObras(){
     const c=leerCoords($('t-obras').querySelector(`[data-loc="${id}"]`).value);if(c.err)return toast(c.err);
     const {error}=await sb.from('asis_obras').update({lat:c.lat,lng:c.lng}).eq('id',id);
     toast(error?error.message:(c.ec?'Ubicación guardada':'Guardada, pero ojo: queda fuera de Ecuador'));cargar();});
+  $('t-obras').querySelectorAll('[data-hist]').forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.hist),o=D.obras.find(x=>x.id===id);
+    const {data,error}=await sb.from('asis_obras_cambios').select('*').eq('obra_id',id).order('cambiado_en',{ascending:false}).limit(30);
+    if(error)return toast(error.message);
+    $('sheet-box').innerHTML=`<h2>Historial de ubicación · ${esc(o.nombre)}</h2>`+(data.length?`<div class="scroll"><table><thead><tr><th>Fecha</th><th>Quién</th><th>Cambio</th></tr></thead><tbody>${data.map(c=>`<tr><td>${new Date(c.cambiado_en).toLocaleString('es-EC',{timeZone:'America/Guayaquil'})}</td><td>${esc(c.cambiado_por||'')}</td><td>${c.lat_antes==null?'Ubicación inicial':(c.distancia_movida_m?'Movida '+c.distancia_movida_m+' m':'')}${c.radio_antes!==c.radio_nuevo?' · radio '+(c.radio_antes??'—')+' → '+c.radio_nuevo+' m':''}</td></tr>`).join('')}</tbody></table></div>`:'<p class="meta">Sin cambios registrados.</p>')+'<button class="btn ghost" id="cl">Cerrar</button>';
+    $('sheet').hidden=false;$('cl').onclick=cerrar;});
   $('t-obras').querySelectorAll('[data-cambiar]').forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.cambiar);
     const td=b.closest('td');td.innerHTML=`<div style="display:flex;gap:6px;flex-wrap:wrap"><input class="mono" data-loc="${id}" placeholder="Nuevas coordenadas" style="width:190px"><button class="btn sm" data-gloc2="${id}">Guardar</button></div>`;
     td.querySelector('[data-gloc2]').onclick=async()=>{const c=leerCoords(td.querySelector('input').value);if(c.err)return toast(c.err);
