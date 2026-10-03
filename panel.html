@@ -547,7 +547,9 @@ function pintarPersonal(){
     <td><input type="checkbox" data-cta="${t.id}" ${t.tiene_cuenta?'checked':''} aria-label="Tiene cuenta"></td>
     <td><input type="checkbox" data-apr="${t.id}" ${t.aprobado_rrhh?'checked':''} aria-label="Aprobado"></td>
     <td><input type="checkbox" data-actv="${t.id}" ${t.activo?'checked':''} aria-label="Activo"></td>
-    <td><button class="btn ghost sm" data-pin="${t.id}">${t.pin_hash?'Nuevo PIN':'Generar PIN'}</button></td><td>${t.foto_ref_path?'<span class="tag st-ok">Sí</span>':'<span class="tag st-warn">Falta</span>'}</td></tr>`;});
+    <td><button class="btn ghost sm" data-pin="${t.id}">${t.pin_hash?'Nuevo PIN':'Generar PIN'}</button></td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${t.foto_ref_path?`<button class="btn ghost sm" data-verref="${t.id}">Ver</button>`:'<span class="tag st-warn">Falta</span>'}
+      <label class="btn sm" for="ref-${t.id}" style="cursor:pointer">${t.foto_ref_path?'Cambiar':'Tomar foto'}</label>
+      <input type="file" id="ref-${t.id}" data-subref="${t.id}" accept="image/*" capture="environment" hidden></div></td></tr>`;});
   $('t-pers').innerHTML=h+'</tbody>';
   const upd=async(id,obj)=>{const {error}=await sb.from('asis_trabajadores').update(obj).eq('id',id);toast(error?error.message:'Guardado');if(!error){Object.assign(D.trab.find(t=>t.id===id),obj);}};
   $('t-pers').querySelectorAll('[data-tar]').forEach(i=>i.onchange=()=>upd(Number(i.dataset.tar),{tarifa_diaria:Number(i.value)}));
@@ -556,6 +558,26 @@ function pintarPersonal(){
   $('t-pers').querySelectorAll('[data-apr]').forEach(i=>i.onchange=()=>{const t=D.trab.find(x=>x.id===Number(i.dataset.apr));
     if(i.checked&&(!t.cedula||!cedulaOk(t.cedula)||!t.pin_hash)){i.checked=false;return toast('Para aprobar necesita cédula válida y PIN.');}
     upd(t.id,{aprobado_rrhh:i.checked});});
+  $('t-pers').querySelectorAll('[data-subref]').forEach(inp=>inp.onchange=async()=>{
+    const f=inp.files[0];if(!f)return;const t=D.trab.find(x=>x.id===Number(inp.dataset.subref));
+    toast('Subiendo foto de '+t.nombre+'…');
+    try{
+      const img=await new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=URL.createObjectURL(f);});
+      const W=Math.min(800,img.width),H=Math.round(W*img.height/img.width),cv=document.createElement('canvas');cv.width=W;cv.height=H;
+      cv.getContext('2d').drawImage(img,0,0,W,H);
+      const blob=await new Promise(ok=>cv.toBlob(ok,'image/jpeg',0.8));
+      const path=`referencias/${t.id}-${Date.now()}.jpg`;
+      const up=await sb.storage.from('asis-selfies').upload(path,blob,{contentType:'image/jpeg'});
+      if(up.error)throw new Error(up.error.message);
+      const {error}=await sb.from('asis_trabajadores').update({foto_ref_path:path}).eq('id',t.id);
+      if(error)throw new Error(error.message);
+      t.foto_ref_path=path;toast('Foto de referencia guardada para '+t.nombre);pintarPersonal();
+    }catch(e){toast('No se pudo subir la foto: '+e.message);}
+  });
+  $('t-pers').querySelectorAll('[data-verref]').forEach(b=>b.onclick=async()=>{const t=D.trab.find(x=>x.id===Number(b.dataset.verref));
+    const {data}=await sb.storage.from('asis-selfies').createSignedUrl(t.foto_ref_path,600);
+    $('sheet-box').innerHTML=`<h2>${esc(t.nombre)}</h2><img src="${data?data.signedUrl:''}" alt="Foto de referencia de ${esc(t.nombre)}"><p class="meta">Foto de referencia. Con esta se comparan sus selfies.</p><button class="btn ghost" id="cl">Cerrar</button>`;
+    $('sheet').hidden=false;$('cl').onclick=cerrar;});
   $('t-pers').querySelectorAll('[data-pin]').forEach(b=>b.onclick=async()=>{const p=pinNuevo();const {error}=await sb.rpc('asis_fijar_pin',{p_trabajador:Number(b.dataset.pin),p_pin:p});
     if(error)return toast(error.message);const t=D.trab.find(x=>x.id===Number(b.dataset.pin));t.pin_hash='x';
     $('sheet-box').innerHTML=`<h2>PIN de ${esc(t.nombre)}</h2><p style="font:700 40px var(--f-mono);letter-spacing:.2em;margin:0">${p}</p><p class="meta">Anótalo y entrégaselo solo a esta persona. No se vuelve a mostrar.</p><button class="btn" id="cl">Listo</button>`;
