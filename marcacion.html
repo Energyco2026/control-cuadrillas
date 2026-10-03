@@ -85,9 +85,11 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
       <video id="video" playsinline autoplay muted></video>
       <img id="foto" alt="Selfie tomada" hidden>
       <div class="oval" id="oval"></div>
+      <div id="camTxt" hidden style="position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:15px">Abriendo cámara…</div>
     </div>
     <div class="gps" id="gps"><span class="d"></span><span id="gpsTxt">Buscando ubicación…</span></div>
     <p class="msg bad" id="err2" hidden></p>
+    <button class="btn ghost" id="reintentar" hidden>Reintentar cámara</button>
     <div id="acciones1"><button class="btn" id="disparar">Tomar foto</button></div>
     <div class="row" id="acciones2" hidden>
       <button class="btn ghost" id="repetir">Repetir</button>
@@ -135,18 +137,32 @@ $('seguir').onclick=async()=>{
   if(p.length!==4) return err('err1','El PIN tiene 4 dígitos.');
   if(!tipo) return err('err1','Elige ENTRADA o SALIDA.');
   err('err1','');ir(2);
-  iniciarGPS();
-  await iniciarCamara();
+  await iniciarCamara();   // primero la cámara (un permiso a la vez)
+  iniciarGPS();            // luego la ubicación
 };
 
 async function iniciarCamara(){
   blob=null;$('foto').hidden=true;$('video').hidden=false;$('oval').hidden=false;
-  $('acciones1').hidden=false;$('acciones2').hidden=true;err('err2','');
+  $('acciones1').hidden=false;$('acciones2').hidden=true;err('err2','');$('reintentar').hidden=true;
+  pararCamara();
+  $('camTxt').textContent='Abriendo cámara…';$('camTxt').hidden=false;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    $('camTxt').hidden=true;err('err2','Este navegador no permite usar la cámara. Abre el link en Google Chrome.');return;}
+  const pedir=c=>Promise.race([navigator.mediaDevices.getUserMedia(c),new Promise((_,r)=>setTimeout(()=>r({name:'Timeout'}),15000))]);
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:960}},audio:false});
-    $('video').srcObject=stream;
+    try{stream=await pedir({video:{facingMode:'user',width:{ideal:720},height:{ideal:960}},audio:false});}
+    catch(e1){if(e1&&(e1.name==='NotAllowedError'||e1.name==='Timeout'))throw e1;stream=await pedir({video:true,audio:false});}
+    const v=$('video');v.srcObject=stream;v.setAttribute('playsinline','');v.muted=true;
+    try{await v.play();}catch(e){}
+    await new Promise((ok,no)=>{if(v.videoWidth)return ok();const t=setTimeout(()=>no({name:'SinImagen'}),6000);v.onloadeddata=()=>{clearTimeout(t);ok();};});
+    $('camTxt').hidden=true;
   }catch(e){
-    err('err2','No se pudo abrir la cámara. Permite el acceso a la cámara en el navegador y vuelve a intentar.');
+    $('camTxt').hidden=true;$('reintentar').hidden=false;pararCamara();
+    const n=e&&e.name;
+    err('err2', n==='NotAllowedError'?'La cámara está bloqueada para esta página. Toca el candado junto a la dirección → Permisos → Cámara → Permitir, y toca "Reintentar cámara".'
+      : n==='NotReadableError'?'Otra aplicación está usando la cámara (WhatsApp, cámara, videollamada). Ciérrala y toca "Reintentar cámara".'
+      : n==='Timeout'?'El celular no respondió al pedir la cámara. Si apareció un aviso de permiso, acéptalo; si no, toca "Reintentar cámara".'
+      : 'La cámara no mostró imagen. Toca "Reintentar cámara". Si sigue negra, cierra el navegador y vuelve a abrir el link.');
   }
 }
 function pararCamara(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
@@ -183,6 +199,7 @@ $('disparar').onclick=()=>{
     $('acciones1').hidden=true;$('acciones2').hidden=false;},'image/jpeg',0.72);
 };
 $('repetir').onclick=()=>{blob=null;$('foto').hidden=true;$('video').hidden=false;$('oval').hidden=false;$('acciones1').hidden=false;$('acciones2').hidden=true;};
+$('reintentar').onclick=()=>iniciarCamara();
 $('cancelar').onclick=()=>{pararCamara();pararGPS();ir(1);};
 
 $('enviar').onclick=async()=>{
