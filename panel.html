@@ -155,20 +155,30 @@ a{color:var(--accent)}
     <!-- OBRAS -->
     <section class="panel" id="p-obras" hidden style="margin-top:16px">
       <div class="card">
-        <h2>Agregar obra</h2>
+        <h2>Ubicar una obra</h2>
+        <p class="meta">Busca la obra que ya viene de Odoo y pégale su ubicación. Con eso queda lista para designar cuadrillas.</p>
         <div class="form">
-          <label class="fld" for="o-nm">Nombre<input id="o-nm" placeholder="Ej. Planta Granasa"></label>
-          <label class="fld" for="o-po">PO<input id="o-po" class="mono" placeholder="2148"></label>
+          <label class="fld full" for="o-sel">Obra (escribe el PO, el nombre o el cliente)
+            <input id="o-sel" list="o-lista" placeholder="Ej. 2148 o GRANASA" autocomplete="off"></label>
+          <datalist id="o-lista"></datalist>
           <label class="fld full" for="o-loc">Ubicación: coordenadas o link largo de Google Maps<input id="o-loc" class="mono" placeholder="-2.17090, -79.92240"></label>
           <label class="fld" for="o-rad">Radio permitido<select id="o-rad">
             <option value="100">100 m · local pequeño</option><option value="150">150 m · casa o edificio</option>
             <option value="200" selected>200 m · obra urbana</option><option value="300">300 m · industria o planta</option>
             <option value="500">500 m · terreno grande o zona rural</option></select></label>
-          <label class="fld" for="o-dir">Dirección o referencia<input id="o-dir"></label>
+          <label class="fld" for="o-dir">Dirección o referencia (opcional)<input id="o-dir"></label>
         </div>
         <p class="meta">En la computadora: clic derecho sobre el lugar en Google Maps y clic en las coordenadas para copiarlas. En el celular: mantén presionado el punto y copia las coordenadas de la barra de búsqueda.</p>
         <p class="msg" id="o-msg" hidden></p>
-        <div><button class="btn" id="o-guardar">Guardar obra</button></div>
+        <div><button class="btn" id="o-guardar">Guardar ubicación</button></div>
+        <details><summary class="meta" style="cursor:pointer">¿La obra todavía no está en Odoo?</summary>
+          <div class="form" style="margin-top:8px">
+            <label class="fld" for="o-nm">Nombre<input id="o-nm"></label>
+            <label class="fld" for="o-po">PO<input id="o-po" class="mono"></label>
+          </div>
+          <p class="meta">Se crea con la ubicación y el radio de arriba. Cuando la analítica exista en Odoo, desactiva esta para no tenerla repetida.</p>
+          <div><button class="btn ghost" id="o-crear">Crear obra fuera de Odoo</button></div>
+        </details>
       </div>
       <div class="bar"><h2>Obras</h2><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <input id="o-busq" placeholder="Buscar por nombre, PO o cliente" style="min-width:240px">
@@ -263,7 +273,7 @@ async function cargar(){
   const r=await Promise.all(q);
   const e=r.find(x=>x.error); if(e){toast('Error al cargar: '+e.error.message);return;}
   D.trab=r[0].data;D.obras=r[1].data;D.cuad=r[2].data;D.asig=r[3].data;D.marc=ROL==='rrhh'?r[4].data:[];
-  if(ROL==='rrhh'){pintarAsistencia();pintarObras();pintarPersonal();}
+  if(ROL==='rrhh'){pintarAsistencia();pintarObras();pintarListaObras();pintarPersonal();}
   pintarDesignacion();
 }
 
@@ -447,13 +457,26 @@ function leerCoords(t){
     return {lat,lng,ec:lat>-5.1&&lat<1.7&&lng>-92.1&&lng<-75.1};}}
   return {err:'No encontré coordenadas. Pega algo como -2.17090, -79.92240.'};
 }
+const etiquetaObra=o=>`${o.po||'—'} · ${o.nombre}${o.cliente?' · '+o.cliente:''}`;
+function pintarListaObras(){$('o-lista').innerHTML=D.obras.filter(o=>o.activa).map(o=>`<option value="${esc(etiquetaObra(o))}"></option>`).join('');}
 $('o-guardar').onclick=async()=>{
-  const nm=$('o-nm').value.trim();if(!nm)return msg('o-msg','Escribe el nombre de la obra.');
+  const v=$('o-sel').value.trim();const o=D.obras.find(x=>x.activa&&etiquetaObra(x)===v);
+  if(!o)return msg('o-msg','Elige la obra de la lista que aparece al escribir. Si no está, usa "¿La obra todavía no está en Odoo?".');
   const c=leerCoords($('o-loc').value);if(c.err)return msg('o-msg',c.err);
-  const {error}=await sb.from('asis_obras').insert({nombre:nm,po:$('o-po').value.trim()||null,direccion:$('o-dir').value.trim()||null,lat:c.lat,lng:c.lng,radio_m:Number($('o-rad').value)});
+  const cambios={lat:c.lat,lng:c.lng,radio_m:Number($('o-rad').value)};if($('o-dir').value.trim())cambios.direccion=$('o-dir').value.trim();
+  const {error}=await sb.from('asis_obras').update(cambios).eq('id',o.id);
   if(error)return msg('o-msg',error.message);
-  msg('o-msg',`Obra guardada en ${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}.${c.ec?'':' Ojo: esas coordenadas quedan fuera de Ecuador.'}`,c.ec?'ok':'warn');
-  ['o-nm','o-po','o-loc','o-dir'].forEach(id=>$(id).value='');cargar();
+  msg('o-msg',`Ubicación guardada para ${o.nombre} (PO ${o.po||'—'}). Ya puedes designarle cuadrillas.${c.ec?'':' Ojo: esas coordenadas quedan fuera de Ecuador.'}`,c.ec?'ok':'warn');
+  ['o-sel','o-loc','o-dir'].forEach(id=>$(id).value='');cargar();
+};
+$('o-crear').onclick=async()=>{
+  const nm=$('o-nm').value.trim();if(!nm)return msg('o-msg','Escribe el nombre de la obra nueva.');
+  const po=$('o-po').value.trim();
+  if(po&&D.obras.some(o=>o.activa&&o.po===po))return msg('o-msg',`Ya existe una obra con el PO ${po}. Búscala arriba en vez de crearla otra vez.`);
+  const c=leerCoords($('o-loc').value);if(c.err)return msg('o-msg',c.err);
+  const {error}=await sb.from('asis_obras').insert({nombre:nm,po:po||null,direccion:$('o-dir').value.trim()||null,lat:c.lat,lng:c.lng,radio_m:Number($('o-rad').value)});
+  if(error)return msg('o-msg',error.message);
+  msg('o-msg','Obra creada fuera de Odoo.','ok');['o-nm','o-po','o-loc','o-dir'].forEach(id=>$(id).value='');cargar();
 };
 let OBUSQ='',OSOLO=true;
 function pintarObras(){
