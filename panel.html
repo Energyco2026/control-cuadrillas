@@ -143,6 +143,8 @@ a{color:var(--accent)}
           <label class="fld" for="d-cua">Cuadrilla<select id="d-cua"></select></label>
           <label class="fld" for="d-cua-n" id="d-cua-n-w" hidden>Nombre de la cuadrilla nueva<input id="d-cua-n" placeholder="Ej. Cuadrilla Granasa"></label>
           <label class="fld" for="d-obra">Obra<select id="d-obra"></select></label>
+          <label class="chk fld full" for="d-emer" style="flex-direction:row;font-size:13px;color:var(--ink)"><input type="checkbox" id="d-emer">
+            Emergencia: mandar personas a otra obra solo por hoy (o estos días) sin quitarlas de su cuadrilla normal</label>
           <label class="fld" for="d-desde">Desde<input id="d-desde" type="date"></label>
           <label class="fld" for="d-hasta">Hasta<input id="d-hasta" type="date"></label>
           <div class="fld full">Personas (solo aprobadas por RR.HH.)<div class="checks" id="d-pers"></div></div>
@@ -268,7 +270,7 @@ async function cargar(){
   q.push(ROL==='rrhh'?sb.from('asis_trabajadores').select('*').order('nombre'):sb.from('asis_personal_disponible').select('*').order('nombre'));
   q.push(sb.from('asis_obras').select('*').order('nombre'));
   q.push(sb.from('asis_cuadrillas').select('*').eq('activa',true).order('nombre'));
-  q.push(sb.from('asis_asignaciones').select('id,desde,hasta,cuadrilla_id,obra_id,asis_asignacion_personas(trabajador_id)').lte('desde',hasta).gte('hasta',desde).order('creado_en'));
+  q.push(sb.from('asis_asignaciones').select('id,desde,hasta,cuadrilla_id,obra_id,tipo,asis_asignacion_personas(trabajador_id)').lte('desde',hasta).gte('hasta',desde).order('creado_en'));
   if(ROL==='rrhh') q.push(sb.from('asis_marcaciones').select('*').gte('marcado_en',desde+'T00:00:00-05:00').lte('marcado_en',hasta+'T23:59:59-05:00').order('marcado_en'));
   const r=await Promise.all(q);
   const e=r.find(x=>x.error); if(e){toast('Error al cargar: '+e.error.message);return;}
@@ -411,7 +413,7 @@ function pintarDesignacion(){
   $('d-hasta').value=$('d-hasta').dataset.sem===ymd(ds[0])&&$('d-hasta').value?$('d-hasta').value:ymd(ds[6]);$('d-hasta').dataset.sem=ymd(ds[0]);
   const nom=id=>(D.trab.find(t=>t.id===id)||{nombre:'(persona no disponible)'}).nombre;
   $('des-lista').innerHTML=D.asig.length?D.asig.map(a=>{const o=obraPor(a.obra_id);return `<div class="card">
-    <div class="bar"><strong>${esc(cuadPor(a.cuadrilla_id).nombre)}</strong><span class="meta">${a.asis_asignacion_personas.length} personas</span></div>
+    <div class="bar"><strong>${esc(cuadPor(a.cuadrilla_id).nombre)} ${a.tipo==='emergencia'?'<span class="tag st-bad">Emergencia</span>':''}</strong><span class="meta">${a.asis_asignacion_personas.length} personas</span></div>
     <span class="meta">${o?esc(o.nombre)+' · PO '+esc(o.po||'—'):'Obra'} · ${a.desde} a ${a.hasta}</span>
     <span style="font-size:13px">${a.asis_asignacion_personas.map(p=>esc(nom(p.trabajador_id))).join('<br>')||'<span class="meta">Sin personas</span>'}</span>
     <div><button class="btn danger sm" data-del="${a.id}">Quitar designación</button></div></div>`;}).join(''):'<p class="meta">No hay cuadrillas designadas para esta semana.</p>';
@@ -423,11 +425,13 @@ function pintarDesignacion(){
   $('d-obra').innerHTML=conUb.map(o=>`<option value="${o.id}">PO ${esc(o.po||'—')} · ${esc(o.nombre)}${o.cliente?' · '+esc(o.cliente):''}</option>`).join('')||'<option value="">Ninguna obra tiene ubicación todavía. Pídele a RR.HH. que la registre.</option>';
   pintarChecks();
 }
+$('d-emer').onchange=()=>{if($('d-emer').checked){const h=ymd(new Date());$('d-desde').value=h;$('d-hasta').value=h;}pintarChecks();};
 $('d-cua').onchange=()=>{$('d-cua-n-w').hidden=$('d-cua').value!=='nueva';};
 ['d-desde','d-hasta'].forEach(id=>$(id).onchange=pintarChecks);
 function pintarChecks(){
   const de=$('d-desde').value,ha=$('d-hasta').value;
-  const ocupado=id=>D.asig.find(a=>a.desde<=ha&&a.hasta>=de&&a.asis_asignacion_personas.some(p=>p.trabajador_id===id));
+  const tipo=$('d-emer').checked?'emergencia':'normal';
+  const ocupado=id=>D.asig.find(a=>(a.tipo||'normal')===tipo&&a.desde<=ha&&a.hasta>=de&&a.asis_asignacion_personas.some(p=>p.trabajador_id===id));
   const lista=D.trab.filter(t=>t.activo!==false&&(ROL!=='rrhh'||t.aprobado_rrhh));
   $('d-pers').innerHTML=lista.map(t=>{const oc=ocupado(t.id);return `<label class="chk ${oc?'dis':''}" for="dp-${t.id}"><input type="checkbox" id="dp-${t.id}" value="${t.id}" ${oc?'disabled':''}>${esc(t.nombre)} <span class="meta">· ${esc(t.rol)}${oc?' · en '+esc(cuadPor(oc.cuadrilla_id).nombre):''}</span></label>`;}).join('')||'<p class="meta">No hay personas aprobadas.</p>';
 }
@@ -441,7 +445,7 @@ $('d-guardar').onclick=async()=>{
   let cua=$('d-cua').value;
   if(cua==='nueva'){const n=$('d-cua-n').value.trim();if(!n)return msg('d-err','Escribe el nombre de la cuadrilla nueva.');
     const {data,error}=await sb.from('asis_cuadrillas').insert({nombre:n}).select().single();if(error)return msg('d-err',error.message.includes('duplicate')?'Ya existe una cuadrilla con ese nombre.':error.message);cua=data.id;}
-  const {data:a,error}=await sb.from('asis_asignaciones').insert({cuadrilla_id:Number(cua),obra_id:obra,desde:de,hasta:ha}).select().single();
+  const {data:a,error}=await sb.from('asis_asignaciones').insert({cuadrilla_id:Number(cua),obra_id:obra,desde:de,hasta:ha,tipo:$('d-emer').checked?'emergencia':'normal'}).select().single();
   if(error) return msg('d-err',error.message);
   const r=await sb.from('asis_asignacion_personas').insert(ids.map(id=>({asignacion_id:a.id,trabajador_id:id})));
   if(r.error){await sb.from('asis_asignaciones').delete().eq('id',a.id);return msg('d-err',r.error.message);}
