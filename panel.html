@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
 <style>
 :root{
   --bg:#F3F5F4; --surface:#FFFFFF; --ink:#16231F; --muted:#5D6B66; --line:#DCE3E0;
@@ -296,7 +297,7 @@ function diaDe(tid,fecha){
   const ent=ms.find(m=>m.tipo==='entrada'),sal=[...ms].reverse().find(m=>m.tipo==='salida');
   const ap=ms.some(m=>m.revision==='aprobado');
   let est='ok';
-  if(ap) est='ok'; else if(ms.some(m=>m.dentro===false||m.obra_id==null)) est='bad'; else if(!ent||!sal) est='warn';
+  if(ap) est='ok'; else if(ms.some(m=>m.dentro===false||m.obra_id==null||(m.rostro_estado&&m.rostro_estado!=='ok'))) est='bad'; else if(!ent||!sal) est='warn';
   let h=0; if(ent&&sal){h=Math.max(0,(new Date(sal.marcado_en)-new Date(ent.marcado_en))/3600000-1);}
   return {est,ent,sal,h,ms,ap};
 }
@@ -361,14 +362,18 @@ async function detalle(tid,f){
     <dt>Distancia</dt><dd>${m.distancia_m!=null?m.distancia_m+' m '+(m.dentro?'· dentro':'· FUERA'):'—'}</dd>
     <dt>Precisión GPS</dt><dd>${m.precision_m!=null?Math.round(m.precision_m)+' m'+(m.precision_m>100?' · <span class="tag st-bad">ubicación aproximada</span>':''):'—'}</dd>
     <dt>Ubicación</dt><dd><a href="https://www.google.com/maps?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Ver en Google Maps</a></dd>
+    <dt>Rostro</dt><dd>${tagRostro(m)}</dd>
     <dt>Equipo</dt><dd>${esc((m.dispositivo||'').split(' · ')[0])}</dd><dt>Revisión</dt><dd>${m.revision}</dd></dl></div>`;}).join('')+
     `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="aprob">Aprobar día</button><button class="btn danger" id="rech">Rechazar día</button>${t.es_prueba?'<button class="btn danger" id="borrar">Borrar (prueba)</button>':''}<button class="btn ghost" id="cl">Cerrar</button></div>`;
   $('sheet').hidden=false;$('cl').onclick=cerrar;
   x.ms.forEach(async(m,i)=>{if(!m.foto_path)return;const {data}=await sb.storage.from('asis-selfies').createSignedUrl(m.foto_path,600);if(data)$('img'+i).src=data.signedUrl;});
   if(t.foto_ref_path){sb.storage.from('asis-selfies').createSignedUrl(t.foto_ref_path,600).then(({data})=>{if(data&&$('imgRef'))$('imgRef').src=data.signedUrl;});}
   box.querySelectorAll('[data-ref]').forEach(b=>b.onclick=async()=>{if(!b.dataset.ref)return;
-    const {error}=await sb.from('asis_trabajadores').update({foto_ref_path:b.dataset.ref}).eq('id',tid);
-    if(error)return toast(error.message);t.foto_ref_path=b.dataset.ref;toast('Foto de referencia guardada');detalle(tid,f);});
+    let desc;try{toast('Verificando rostro…');const {data}=await sb.storage.from('asis-selfies').createSignedUrl(b.dataset.ref,600);
+      const img=await new Promise((ok,no)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>ok(i);i.onerror=()=>no(new Error('No se pudo abrir la foto'));i.src=data.signedUrl;});
+      desc=await descriptorDe(img);}catch(e){return toast('No se guardó: '+e.message);}
+    const {error}=await sb.from('asis_trabajadores').update({foto_ref_path:b.dataset.ref,rostro_ref:desc}).eq('id',tid);
+    if(error)return toast(error.message);t.foto_ref_path=b.dataset.ref;t.rostro_ref=desc;toast('Foto de referencia guardada');detalle(tid,f);});
   const rev=async v=>{const {data:{user}}=await sb.auth.getUser();const {error}=await sb.from('asis_marcaciones').update({revision:v,revisado_por:user.id}).in('id',x.ms.map(m=>m.id));
     if(error)return toast('No se pudo guardar: '+error.message);cerrar();toast(v==='aprobado'?'Día aprobado':'Día rechazado');cargar();};
   $('aprob').onclick=()=>rev('aprobado');$('rech').onclick=()=>rev('rechazado');
@@ -397,7 +402,7 @@ $('excel').onclick=()=>{
         'Pagable':x.est==='ok'?'Sí':'No','Valor':x.est==='ok'?Number(t.tarifa_diaria):0});
       x.ms.forEach(m=>{const om=obraPor(m.obra_id);marcas.push({'Fecha':f,'Hora':hl(m.marcado_en),'Tipo':m.tipo,'Trabajador':t.nombre,'Cédula':t.cedula||'','Cuadrilla':cuaDe(t),
         'Obra':om?om.nombre:'Sin obra','PO':om?om.po||'':'','Distancia (m)':m.distancia_m,'Dentro de obra':m.dentro==null?'':(m.dentro?'Sí':'No'),
-        'Precisión GPS (m)':m.precision_m!=null?Math.round(m.precision_m):'','Latitud':m.lat,'Longitud':m.lng,'Revisión':m.revision,'Equipo':(m.dispositivo||'').split(' · ')[0]});});
+        'Precisión GPS (m)':m.precision_m!=null?Math.round(m.precision_m):'','Latitud':m.lat,'Longitud':m.lng,'Rostro':m.rostro_estado?(ROSTRO[m.rostro_estado]||[0,m.rostro_estado])[1]:'','Distancia rostro':m.rostro_dist!=null?Number(m.rostro_dist).toFixed(2):'','Revisión':m.revision,'Equipo':(m.dispositivo||'').split(' · ')[0]});});
     });
     resumen.push({'Cuadrilla':cuaDe(t),'Obra':o?o.nombre:'','PO':o?o.po||'':'','Trabajador':t.nombre,'Cédula':t.cedula||'','Rol':t.rol,'Días válidos':v,'Por revisar':r,
       'Horas':Number(hs.toFixed(2)),'Tarifa diaria':Number(t.tarifa_diaria),'A pagar':v*t.tarifa_diaria,'Forma de pago':t.tiene_cuenta?'Transferencia':'Anticipo (sin cuenta)'});
@@ -540,6 +545,21 @@ $('o-solo').onchange=()=>pintarObras();
 // ---------- Personal ----------
 function cedulaOk(c){if(!/^\d{10}$/.test(c))return false;let s=0;for(let i=0;i<9;i++){let v=+c[i]*(i%2===0?2:1);s+=v>9?v-9:v;}return (10-s%10)%10===+c[9];}
 function pinNuevo(){let p;do{p=String(Math.floor(Math.random()*10000)).padStart(4,'0');}while(new Set(p).size<3);return p;}
+// ---------- Rostro de referencia ----------
+const MODELOS='https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+let _modelos=null;
+function cargarModelos(){if(!_modelos)_modelos=(async()=>{await faceapi.tf.ready();await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(MODELOS),faceapi.nets.faceLandmark68Net.loadFromUri(MODELOS),faceapi.nets.faceRecognitionNet.loadFromUri(MODELOS)]);})().catch(e=>{_modelos=null;throw e;});return _modelos;}
+async function descriptorDe(img){
+  await cargarModelos();
+  const caras=await faceapi.detectAllFaces(img,new faceapi.TinyFaceDetectorOptions({inputSize:608,scoreThreshold:0.5})).withFaceLandmarks().withFaceDescriptors();
+  if(!caras.length) throw new Error('No se detecta un rostro en la foto. Tómala de frente, de cerca y con buena luz.');
+  if(caras.length>1) throw new Error('Hay más de una persona en la foto. Debe salir solo el trabajador.');
+  if(caras[0].detection.score<0.6) throw new Error('El rostro no se ve claro. Repite la foto con más luz.');
+  return Array.from(caras[0].descriptor);
+}
+const ROSTRO={ok:['st-ok','Coincide'],dudoso:['st-warn','Dudoso'],no_coincide:['st-bad','NO coincide'],sin_ref:['st-warn','Sin foto de referencia']};
+function tagRostro(m){if(!m.rostro_estado)return '—';const r=ROSTRO[m.rostro_estado]||['st-warn',m.rostro_estado];return `<span class="tag ${r[0]}">${r[1]}</span>${m.rostro_dist!=null?' <span class="meta">(distancia '+Number(m.rostro_dist).toFixed(2)+')</span>':''}`;}
+
 function pintarPersonal(){
   const ts=[...D.trab].sort((a,b)=>(b.activo-a.activo)||a.nombre.localeCompare(b.nombre));
   let h=`<thead><tr><th>Nombre</th><th>Cédula</th><th>Rol</th><th>Tarifa</th><th>Cuenta</th><th>Aprobado</th><th>Activo</th><th>PIN</th><th>Foto ref.</th></tr></thead><tbody>`;
@@ -550,7 +570,7 @@ function pintarPersonal(){
     <td><input type="checkbox" data-cta="${t.id}" ${t.tiene_cuenta?'checked':''} aria-label="Tiene cuenta"></td>
     <td><input type="checkbox" data-apr="${t.id}" ${t.aprobado_rrhh?'checked':''} aria-label="Aprobado"></td>
     <td><input type="checkbox" data-actv="${t.id}" ${t.activo?'checked':''} aria-label="Activo"></td>
-    <td><button class="btn ghost sm" data-pin="${t.id}">${t.pin_hash?'Nuevo PIN':'Generar PIN'}</button></td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${t.foto_ref_path?`<button class="btn ghost sm" data-verref="${t.id}">Ver</button>`:'<span class="tag st-warn">Falta</span>'}
+    <td><button class="btn ghost sm" data-pin="${t.id}">${t.pin_hash?'Nuevo PIN':'Generar PIN'}</button></td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${t.foto_ref_path?`<button class="btn ghost sm" data-verref="${t.id}">Ver</button>${t.rostro_ref?'':'<span class="tag st-warn">Sin rostro · cámbiala</span>'}`:'<span class="tag st-warn">Falta</span>'}
       <label class="btn sm" for="ref-${t.id}" style="cursor:pointer">${t.foto_ref_path?'Cambiar':'Tomar foto'}</label>
       <input type="file" id="ref-${t.id}" data-subref="${t.id}" accept="image/*" capture="environment" hidden></div></td></tr>`;});
   $('t-pers').innerHTML=h+'</tbody>';
@@ -568,14 +588,17 @@ function pintarPersonal(){
       const img=await new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=URL.createObjectURL(f);});
       const W=Math.min(800,img.width),H=Math.round(W*img.height/img.width),cv=document.createElement('canvas');cv.width=W;cv.height=H;
       cv.getContext('2d').drawImage(img,0,0,W,H);
+      toast('Verificando rostro de '+t.nombre+'…');
+      const desc=await descriptorDe(cv);
       const blob=await new Promise(ok=>cv.toBlob(ok,'image/jpeg',0.8));
       const path=`referencias/${t.id}-${Date.now()}.jpg`;
       const up=await sb.storage.from('asis-selfies').upload(path,blob,{contentType:'image/jpeg'});
       if(up.error)throw new Error(up.error.message);
-      const {error}=await sb.from('asis_trabajadores').update({foto_ref_path:path}).eq('id',t.id);
+      const {error}=await sb.from('asis_trabajadores').update({foto_ref_path:path,rostro_ref:desc}).eq('id',t.id);
       if(error)throw new Error(error.message);
-      t.foto_ref_path=path;toast('Foto de referencia guardada para '+t.nombre);pintarPersonal();
-    }catch(e){toast('No se pudo subir la foto: '+e.message);}
+      t.foto_ref_path=path;t.rostro_ref=desc;toast('Foto de referencia guardada para '+t.nombre);pintarPersonal();
+    }catch(e){toast('No se guardó la foto: '+e.message);}
+    inp.value='';
   });
   $('t-pers').querySelectorAll('[data-verref]').forEach(b=>b.onclick=async()=>{const t=D.trab.find(x=>x.id===Number(b.dataset.verref));
     const {data}=await sb.storage.from('asis-selfies').createSignedUrl(t.foto_ref_path,600);
