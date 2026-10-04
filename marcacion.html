@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
 <style>
 :root{
   --bg:#F3F5F4; --surface:#FFFFFF; --ink:#16231F; --muted:#5D6B66; --line:#DCE3E0;
@@ -87,6 +88,7 @@ input:focus{outline:2px solid var(--accent);outline-offset:1px}
       <div class="oval" id="oval"></div>
       <div id="camTxt" hidden style="position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:15px">Abriendo cámara…</div>
     </div>
+    <div class="gps" id="cara"><span class="d"></span><span id="caraTxt">Preparando verificación de rostro…</span></div>
     <div class="gps" id="gps"><span class="d"></span><span id="gpsTxt">Buscando ubicación…</span></div>
     <p class="msg bad" id="err2" hidden></p>
     <button class="btn ghost" id="reintentar" hidden>Reintentar cámara</button>
@@ -114,6 +116,31 @@ const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:f
 const $=id=>document.getElementById(id);
 let tipo=null, stream=null, blob=null, pos=null, gpsWatch=null;
 const PRECISION_MAX=100; // metros: más que esto no se acepta (ubicación aproximada)
+let rostro=null; // descriptor de 128 valores de la selfie actual
+
+// ---------- Verificación de rostro ----------
+const MODELOS='https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+let modelosOK=false;
+const modelos=(async()=>{
+  try{
+    await faceapi.tf.ready();
+    await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(MODELOS),faceapi.nets.faceLandmark68Net.loadFromUri(MODELOS),faceapi.nets.faceRecognitionNet.loadFromUri(MODELOS)]);
+    modelosOK=true;
+  }catch(e){modelosOK=false;}
+})();
+function estadoCara(cls,t){$('cara').className='gps'+(cls?' '+cls:'');$('caraTxt').textContent=t;}
+async function analizarRostro(cv){
+  if(!modelosOK){estadoCara('', 'Cargando verificador de rostro (solo la primera vez tarda)…');await modelos;}
+  if(!modelosOK) return {ok:false,msg:'No se pudo cargar el verificador de rostro. Revisa tus datos móviles y recarga la página.'};
+  const caras=await faceapi.detectAllFaces(cv,new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:0.5})).withFaceLandmarks().withFaceDescriptors();
+  if(!caras.length) return {ok:false,msg:'No se ve tu rostro en la foto. Pon tu cara dentro del óvalo, de frente y con buena luz, y toca "Repetir".'};
+  if(caras.length>1) return {ok:false,msg:'Aparece más de una persona en la foto. Debe salir solo tu rostro. Toca "Repetir".'};
+  const c=caras[0],box=c.detection.box;
+  if(c.detection.score<0.6) return {ok:false,msg:'El rostro no se ve claro. Busca más luz y toca "Repetir".'};
+  if(box.width<cv.width*0.18) return {ok:false,msg:'Tu rostro sale muy lejos. Acerca el celular a tu cara y toca "Repetir".'};
+  return {ok:true,desc:Array.from(c.descriptor)};
+}
+
 
 // Identificador del equipo (para saber desde qué celular se marcó)
 let equipo='';
@@ -142,7 +169,8 @@ $('seguir').onclick=async()=>{
 };
 
 async function iniciarCamara(){
-  blob=null;$('foto').hidden=true;$('video').hidden=false;$('oval').hidden=false;
+  blob=null;rostro=null;$('foto').hidden=true;$('video').hidden=false;$('oval').hidden=false;
+  estadoCara('',modelosOK?'Verificación de rostro lista':'Preparando verificación de rostro…');
   $('acciones1').hidden=false;$('acciones2').hidden=true;err('err2','');$('reintentar').hidden=true;
   pararCamara();
   $('camTxt').textContent='Abriendo cámara…';$('camTxt').hidden=false;
@@ -184,26 +212,34 @@ function iniciarGPS(){
 }
 function pararGPS(){if(gpsWatch!==null){navigator.geolocation.clearWatch(gpsWatch);gpsWatch=null;}}
 
-$('disparar').onclick=()=>{
+$('disparar').onclick=async()=>{
   const v=$('video');
   if(!v.videoWidth) return err('err2','La cámara aún no está lista.');
   const W=Math.min(640,v.videoWidth),H=Math.round(W*v.videoHeight/v.videoWidth);
   const cv=document.createElement('canvas');cv.width=W;cv.height=H;
   const ctx=cv.getContext('2d');ctx.translate(W,0);ctx.scale(-1,1);ctx.drawImage(v,0,0,W,H);
   ctx.setTransform(1,0,0,1,0,0);
+  // Congelar la imagen y verificar el rostro antes de permitir enviar
+  rostro=null;const d=$('disparar');d.disabled=true;d.textContent='Verificando rostro…';
+  estadoCara('','Verificando rostro…');err('err2','');
+  let r;try{r=await analizarRostro(cv);}catch(e){r={ok:false,msg:'No se pudo verificar el rostro. Toca "Repetir".'};}
+  d.disabled=false;d.textContent='Tomar foto';
   // Sello visible en la foto
   const n=new Date(),t=n.toLocaleDateString('es-EC')+' '+n.toLocaleTimeString('es-EC',{hour:'2-digit',minute:'2-digit',hour12:false});
   ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,H-30,W,30);
   ctx.fillStyle='#fff';ctx.font='bold 16px monospace';ctx.fillText(t+'  '+(tipo||'').toUpperCase(),10,H-10);
-  cv.toBlob(b=>{blob=b;$('foto').src=URL.createObjectURL(b);$('foto').hidden=false;$('video').hidden=true;$('oval').hidden=true;
-    $('acciones1').hidden=true;$('acciones2').hidden=false;},'image/jpeg',0.72);
+  cv.toBlob(b=>{$('foto').src=URL.createObjectURL(b);$('foto').hidden=false;$('video').hidden=true;$('oval').hidden=true;
+    $('acciones1').hidden=true;$('acciones2').hidden=false;
+    if(r.ok){blob=b;rostro=r.desc;$('enviar').hidden=false;estadoCara('ok','Rostro detectado');}
+    else{blob=null;rostro=null;$('enviar').hidden=true;estadoCara('bad','Rostro no válido');err('err2',r.msg);}
+  },'image/jpeg',0.72);
 };
-$('repetir').onclick=()=>{blob=null;$('foto').hidden=true;$('video').hidden=false;$('oval').hidden=false;$('acciones1').hidden=false;$('acciones2').hidden=true;};
+$('repetir').onclick=()=>{blob=null;rostro=null;err('err2','');estadoCara('',modelosOK?'Verificación de rostro lista':'Preparando verificación de rostro…');$('foto').hidden=true;$('video').hidden=false;$('oval').hidden=false;$('acciones1').hidden=false;$('acciones2').hidden=true;};
 $('reintentar').onclick=()=>iniciarCamara();
 $('cancelar').onclick=()=>{pararCamara();pararGPS();ir(1);};
 
 $('enviar').onclick=async()=>{
-  if(!blob) return err('err2','Primero toma la foto.');
+  if(!blob||!rostro) return err('err2','Primero toma una foto donde se vea tu rostro.');
   if(!pos) return err('err2','Todavía no hay ubicación. Espera unos segundos con el GPS activado.');
   if(pos.coords.accuracy>PRECISION_MAX) return err('err2',`La ubicación no es precisa (${Math.round(pos.coords.accuracy)} m). Si elegiste "Aproximada", cambia el permiso a "Precisa" en el candado junto a la dirección de la página y recarga.`);
   const b=$('enviar');b.disabled=true;b.textContent='Enviando…';err('err2','');
@@ -213,9 +249,10 @@ $('enviar').onclick=async()=>{
     const up=await sb.storage.from('asis-selfies').upload(path,blob,{contentType:'image/jpeg',upsert:false});
     if(up.error) throw new Error('No se pudo subir la foto. Revisa tu conexión de datos.');
     const {data,error}=await sb.rpc('asis_marcar',{p_cedula:$('ced').value,p_pin:$('pin').value,p_tipo:tipo,
-      p_lat:pos.coords.latitude,p_lng:pos.coords.longitude,p_precision:pos.coords.accuracy,p_foto_path:path,p_dispositivo:equipo+' · '+navigator.userAgent.slice(0,120)});
+      p_lat:pos.coords.latitude,p_lng:pos.coords.longitude,p_precision:pos.coords.accuracy,p_foto_path:path,p_dispositivo:equipo+' · '+navigator.userAgent.slice(0,120),p_rostro:rostro});
     if(error) throw new Error('No se pudo registrar. Revisa tu conexión de datos e intenta otra vez.');
     if(!data.ok){err('err2',data.error);b.disabled=false;b.textContent='Enviar';
+      if(data.rostro){blob=null;rostro=null;$('enviar').hidden=true;estadoCara('bad','El rostro no coincide');}
       if(/PIN|Cédula/i.test(data.error)){pararCamara();pararGPS();ir(1);err('err1',data.error);} return;}
     pararCamara();pararGPS();try{localStorage.setItem('asis_permisos_ok','1');$('aviso').hidden=true;}catch(e){}mostrar(data);
   }catch(e){err('err2',e.message);}
@@ -227,10 +264,11 @@ function mostrar(d){
   const cls=sinObra?'warn':(d.dentro?'ok':'bad');
   const linea=sinObra?'No tienes obra designada hoy. Avísale a tu administrador; RR.HH. revisará esta marcación.'
     :(d.dentro?`Estás en ${d.obra} (a ${d.distancia_m} m).`:`Estás a ${d.distancia_m} m de ${d.obra}. Quedó registrada, pero RR.HH. la revisará.`);
+  const rTxt={dudoso:'No se pudo confirmar bien tu rostro. RR.HH. revisará la foto.',no_coincide:'Tu rostro no coincidió con tu foto registrada. RR.HH. revisará esta marcación antes de pagarla.',sin_ref:'Aún no tienes foto de referencia. Pídele a RR.HH. que te la tome.'}[d.rostro];
   $('resultado').innerHTML=`<p class="big">${tipo==='entrada'?'Entrada':'Salida'} registrada · ${d.hora}</p>
-    <p style="margin:4px 0 10px">${d.nombre}</p><p class="msg ${cls}">${linea}</p>`;
+    <p style="margin:4px 0 10px">${d.nombre}</p><p class="msg ${cls}">${linea}</p>${rTxt?`<p class="msg warn" style="margin-top:8px">${rTxt}</p>`:''}`;
   ir(3);
-  $('ced').value='';$('pin').value='';setTipo(null);blob=null;
+  $('ced').value='';$('pin').value='';setTipo(null);blob=null;rostro=null;
 }
 $('otro').onclick=()=>ir(1);
 </script>
