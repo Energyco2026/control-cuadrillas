@@ -127,13 +127,27 @@ a{color:var(--accent)}
         </div>
         <button class="btn" id="excel">Descargar Excel</button>
       </div>
+      <details class="card" open>
+        <summary><strong>Base del cálculo semanal · Jornal por 8 horas</strong></summary>
+        <p class="meta">Valor hora = tarifa diaria ÷ 8. Horas normales según tiempo efectivo; suplementarias al 50%; descanso y feriados al 100%. Jornada nocturna ordinaria: adicional 25%. El período de pago sigue siendo sábado a viernes.</p>
+        <div class="form">
+          <label class="fld" for="calc-almuerzo">Inicio del almuerzo<input id="calc-almuerzo" type="time" value="12:00"></label>
+          <label class="fld" for="calc-minutos">Almuerzo (minutos)<input id="calc-minutos" type="number" min="0" max="120" step="1" value="60"></label>
+          <label class="fld full">Días de descanso obligatorio<div id="calc-descansos"></div></label>
+          <label class="fld full" for="calc-feriados">Feriados aplicables a las fechas revisadas<input id="calc-feriados" placeholder="Ej.: 2026-10-09, 2026-11-02"></label>
+        </div>
+        <p class="meta">Almuerzo inicial: 12:00–13:00. Se descuenta únicamente la parte que coincide con la jornada; con varios pares de entrada/salida se usan las pausas registradas. Ajusta el horario real antes de descargar. Los feriados no se cargan automáticamente. Estos parámetros se aplican a la cuadrilla consultada y se incluyen en el Excel; no se guardan en la ficha del trabajador.</p>
+        <button class="btn ghost sm" id="calc-aplicar">Aplicar parámetros</button>
+        <p id="calc-error" class="msg bad" hidden></p>
+        <p id="calc-estado" class="meta">Cálculo preliminar: confirma el horario de almuerzo, los descansos y los feriados de esta semana.</p>
+      </details>
       <div class="kpis" id="kpis"></div>
       <div class="bar"><h2>Asistencia de la semana</h2>
         <span class="meta"><span class="tag st-ok">Válido</span> <span class="tag st-warn">Falta marcación</span> <span class="tag st-bad">Fuera de obra</span> <span class="tag st-off">No marcó</span></span></div>
       <div class="scroll"><table id="grid"></table></div>
       <div class="bar"><h2>Pago de la semana</h2></div>
       <div class="scroll"><table id="pago"></table></div>
-      <p class="meta">Se pagan los días con entrada y salida dentro de la obra, o aprobados por RR.HH. Toca un día para ver la selfie y aprobar o rechazar.</p>
+      <p class="meta">Se liquidan las horas efectivas con entrada y salida completas y válidas. La aprobación de RR.HH. valida las evidencias, pero no completa horarios faltantes. Toca un día para revisar las selfies. El valor mostrado es bruto, antes de anticipos y descuentos.</p>
     </section>
 
     <!-- DESIGNACIÓN -->
@@ -270,13 +284,14 @@ function abrir(p){document.querySelectorAll('.tab').forEach(t=>t.setAttribute('a
 // ---------- Carga de datos ----------
 async function cargar(){
   $('sem-txt').textContent=txtSemana();
+  calculoConfirmado=false;$('calc-estado').textContent='Cálculo preliminar: aplica los parámetros para confirmar la semana '+txtSemana()+'.';
   const ds=diasSemana(),desde=ymd(ds[0]),hasta=ymd(ds[6]);
   const q=[];
   q.push(ROL==='rrhh'?sb.from('asis_trabajadores').select('*').order('nombre'):sb.from('asis_personal_disponible').select('*').order('nombre'));
   q.push(sb.from('asis_obras').select('*').order('nombre'));
   q.push(sb.from('asis_cuadrillas').select('*').eq('activa',true).order('nombre'));
   q.push(sb.from('asis_asignaciones').select('id,desde,hasta,cuadrilla_id,obra_id,tipo,asis_asignacion_personas(trabajador_id)').lte('desde',hasta).gte('hasta',desde).order('creado_en'));
-  if(ROL==='rrhh') q.push(sb.from('asis_marcaciones').select('*').gte('marcado_en',desde+'T00:00:00-05:00').lte('marcado_en',hasta+'T23:59:59-05:00').order('marcado_en'));
+  if(ROL==='rrhh'){const previo=new Date(ds[0]);previo.setDate(previo.getDate()-1);const siguiente=new Date(ds[6]);siguiente.setDate(siguiente.getDate()+1);q.push(sb.from('asis_marcaciones').select('*').gte('marcado_en',ymd(previo)+'T00:00:00-05:00').lte('marcado_en',ymd(siguiente)+'T23:59:59-05:00').order('marcado_en'));}
   const r=await Promise.all(q);
   const e=r.find(x=>x.error); if(e){toast('Error al cargar: '+e.error.message);return;}
   D.trab=r[0].data;D.obras=r[1].data;D.cuad=r[2].data;D.asig=r[3].data;D.marc=ROL==='rrhh'?r[4].data:[];
@@ -291,18 +306,127 @@ const fechaLocal=ts=>ymd(new Date(new Date(ts).toLocaleString('en-US',{timeZone:
 const horaLocal=ts=>new Date(ts).toLocaleTimeString('es-EC',{timeZone:'America/Guayaquil',hour:'2-digit',minute:'2-digit'});
 
 // ---------- Asistencia ----------
-function diaDe(tid,fecha){
-  const ms=D.marc.filter(m=>m.trabajador_id===tid&&fechaLocal(m.marcado_en)===fecha&&m.revision!=='rechazado');
-  if(!ms.length) return {est:'off',ms:D.marc.filter(m=>m.trabajador_id===tid&&fechaLocal(m.marcado_en)===fecha)};
-  const ent=ms.find(m=>m.tipo==='entrada'),sal=[...ms].reverse().find(m=>m.tipo==='salida');
-  const ap=ms.some(m=>m.revision==='aprobado');
-  let est='ok';
-  if(ap) est='ok'; else if(ms.some(m=>m.dentro===false||m.obra_id==null||(m.rostro_estado&&m.rostro_estado!=='ok'))) est='bad'; else if(!ent||!sal) est='warn';
-  let h=0; if(ent&&sal){h=Math.max(0,(new Date(sal.marcado_en)-new Date(ent.marcado_en))/3600000-1);}
-  return {est,ent,sal,h,ms,ap};
+// PAYROLL_ENGINE_START
+const CALC_VERSION='cuadrillas-horas-v1';
+let CFG={descanso:[0,6],feriados:[],almuerzo:'12:00',minutos:60};
+const redondear=v=>Math.round((v+Number.EPSILON)*100)/100;
+const fechaEC=ts=>new Date(ts).toLocaleDateString('en-CA',{timeZone:'America/Guayaquil'});
+const minutoEC=ts=>{const p=new Intl.DateTimeFormat('en-GB',{timeZone:'America/Guayaquil',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(ts)).split(':');return Number(p[0])*60+Number(p[1]);};
+function periodosDia(tid,fecha){
+  const todas=D.marc.filter(m=>m.trabajador_id===tid).sort((a,b)=>new Date(a.marcado_en)-new Date(b.marcado_en));
+  const pares=[],errores=[],huérfanas=[];let entrada=null;
+  for(const m of todas){
+    if(m.revision==='rechazado'){if(entrada){errores.push(fechaEC(entrada.marcado_en));entrada=null;}errores.push(fechaEC(m.marcado_en));continue;}
+    if(m.tipo==='entrada'){
+      if(entrada)errores.push(fechaEC(entrada.marcado_en));
+      entrada=m;
+    }else if(m.tipo==='salida'){
+      if(!entrada){huérfanas.push(m);continue;}
+      pares.push({ent:entrada,sal:m});entrada=null;
+    }else errores.push(fechaEC(m.marcado_en));
+  }
+  if(entrada)errores.push(fechaEC(entrada.marcado_en));
+  const ps=pares.filter(p=>fechaEC(p.ent.marcado_en)===fecha);
+  const usadas=new Set(ps.flatMap(p=>[p.ent.id,p.sal.id]));
+  const cruces=new Set(pares.filter(p=>fechaEC(p.ent.marcado_en)!==fecha).flatMap(p=>[p.ent.id,p.sal.id]));
+  const ms=todas.filter(m=>usadas.has(m.id)||(fechaEC(m.marcado_en)===fecha&&!cruces.has(m.id)));
+  return {ps,ms,incompleto:errores.includes(fecha)||huérfanas.some(m=>fechaEC(m.marcado_en)===fecha)};
 }
+function diaDe(tid,fecha){
+  const {ps,ms,incompleto}=periodosDia(tid,fecha);
+  const ent=ps[0]?.ent||ms.find(m=>m.tipo==='entrada'&&m.revision!=='rechazado');
+  const sal=ps.at(-1)?.sal||[...ms].reverse().find(m=>m.tipo==='salida'&&m.revision!=='rechazado');
+  const aprobadas=ms.filter(m=>m.revision!=='rechazado');
+  let est='ok',motivo='';
+  if(!aprobadas.length){est='off';motivo=ms.length?'Marcaciones rechazadas':'Sin marcaciones';}
+  else if(incompleto||!ps.length||ps.some(p=>new Date(p.sal.marcado_en)<=new Date(p.ent.marcado_en)||new Date(p.sal.marcado_en)-new Date(p.ent.marcado_en)>24*3600000)){
+    est='warn';motivo='Marcaciones incompletas, duplicadas o fuera de secuencia: corregir antes de pagar';
+  }else if(ps.some(p=>p.ent.obra_id!==p.sal.obra_id)){
+    est='warn';motivo='Entrada y salida en obras diferentes: revisar antes de pagar';
+  }else if(aprobadas.some(m=>m.revision!=='aprobado'&&(m.dentro===false||m.obra_id==null||(m.rostro_estado&&m.rostro_estado!=='ok')))){
+    est='bad';motivo='Ubicación o rostro pendiente de validación';
+  }
+  // El descanso se descuenta solo en el horario configurado y si existe un único par.
+  // Con varios pares, las pausas ya están representadas por las salidas y entradas.
+  const segmentos=[];let descanso=0;
+  for(const p of ps){
+    const ini=new Date(p.ent.marcado_en).getTime(),fin=new Date(p.sal.marcado_en).getTime();
+    let spans=[[ini,fin]];
+    if(ps.length===1&&CFG.minutos>0){
+      let medianoche=new Date(fechaEC(ini)+'T00:00:00-05:00').getTime();
+      for(;medianoche<fin;medianoche+=24*3600000){
+        const dia=fechaEC(medianoche),b=new Date(dia+'T'+CFG.almuerzo+':00-05:00').getTime(),e=b+CFG.minutos*60000;
+        const siguientes=[];
+        for(const [a,z] of spans){const bi=Math.max(a,b),bf=Math.min(z,e);if(bf>bi){if(a<bi)siguientes.push([a,bi]);if(bf<z)siguientes.push([bf,z]);descanso+=(bf-bi)/3600000;}else siguientes.push([a,z]);}
+        spans=siguientes;
+      }
+    }
+    segmentos.push(...spans.filter(([a,b])=>b>a));
+  }
+  const h=segmentos.reduce((n,[a,b])=>n+(b-a)/3600000,0);
+  if(est==='ok'&&h<=0){est='warn';motivo='No hay horas efectivas para liquidar';}
+  const ap=aprobadas.length>0&&aprobadas.every(m=>m.revision==='aprobado');
+  return {est,ent,sal,h,ms,ap,ps,segmentos,descanso,motivo};
+}
+function liquidarDia(t,fecha){
+  const x=diaDe(t.id,fecha),vh=Number(t.tarifa_diaria)/8;
+  const r={...x,hNorm:0,h50:0,h100:0,hNoche:0,vNorm:0,v50:0,v100:0,vNoche:0,total:0,vh,alertas:[]};
+  if(x.est!=='ok')return r;
+  if(!Number.isFinite(vh)||vh<=0){r.est='warn';r.motivo='Tarifa diaria inválida: revisar en Personal';return r;}
+  // Cortes por medianoche y 06:00/19:00; el recargo depende del día efectivo trabajado.
+  for(const [a,b] of x.segmentos){
+    let cursor=a;
+    while(cursor<b){
+      const dia=fechaEC(cursor),min=minutoEC(cursor),wd=new Date(dia+'T12:00:00-05:00').getUTCDay();
+      const finDia=new Date(dia+'T00:00:00-05:00').getTime()+24*3600000;
+      const corte=min<360?new Date(dia+'T06:00:00-05:00').getTime():min<1140?new Date(dia+'T19:00:00-05:00').getTime():finDia;
+      const fin=Math.min(b,corte),horas=(fin-cursor)/3600000;
+      const libre=CFG.descanso.includes(wd)||CFG.feriados.includes(dia);
+      if(libre)r.h100+=horas;
+      else{
+        const normal=Math.min(horas,Math.max(0,8-r.hNorm)),extra=horas-normal;
+        r.hNorm+=normal;
+        if(min<360||min>=1140)r.hNoche+=normal;
+        if(min<360)r.h100+=extra;else r.h50+=extra;
+      }
+      cursor=fin;
+    }
+  }
+  r.vNorm=redondear(r.hNorm*vh);r.v50=redondear(r.h50*vh*1.5);r.v100=redondear(r.h100*vh*2);r.vNoche=redondear(r.hNoche*vh*0.25);
+  r.total=redondear(r.vNorm+r.v50+r.v100+r.vNoche);
+  if(r.h50>4+1e-8)r.alertas.push('Más de 4 horas suplementarias en el día');
+  return r;
+}
+function resumenTrabajador(t){
+  const dias=diasSemana().map(d=>({fecha:ymd(d),...liquidarDia(t,ymd(d))}));
+  const r={dias,v:0,pend:0,horas:0,hNorm:0,h50:0,h100:0,hNoche:0,vNorm:0,v50:0,v100:0,vNoche:0,total:0,alertas:[]};
+  dias.forEach(d=>{if(d.est==='ok'){r.v++;r.horas+=d.h;for(const k of ['hNorm','h50','h100','hNoche','vNorm','v50','v100','vNoche','total'])r[k]+=d[k];}else if(d.est!=='off')r.pend++;r.alertas.push(...d.alertas);});
+  for(const k of ['vNorm','v50','v100','vNoche','total'])r[k]=redondear(r[k]);
+  if(r.hNorm>40+1e-8)r.alertas.push('Más de 40 horas ordinarias: revisar jornada y descansos');
+  if(r.h50>12+1e-8)r.alertas.push('Más de 12 horas suplementarias en la semana');
+  r.alertas=[...new Set(r.alertas)];return r;
+}
+// PAYROLL_ENGINE_END
+
+let calculoConfirmado=false;
+const diasNombre=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+$('calc-descansos').innerHTML=diasNombre.map((n,i)=>`<label style="display:inline-flex;gap:6px;margin:8px"><input type="checkbox" data-descanso="${i}" ${CFG.descanso.includes(i)?'checked':''}>${n}</label>`).join('');
+function parametrosSinAplicar(){calculoConfirmado=false;$('calc-estado').textContent='Parámetros modificados: pulsa Aplicar parámetros para recalcular.';}
+['calc-almuerzo','calc-minutos','calc-feriados'].forEach(id=>$(id).addEventListener('input',parametrosSinAplicar));
+$('calc-descansos').addEventListener('change',parametrosSinAplicar);
+$('calc-aplicar').onclick=()=>{
+  const almuerzo=$('calc-almuerzo').value,minutos=Number($('calc-minutos').value),descanso=[...$('calc-descansos').querySelectorAll('input:checked')].map(i=>Number(i.dataset.descanso));
+  const feriados=$('calc-feriados').value.split(/[\s,;]+/).filter(Boolean);
+  let error='';
+  if(!/^\d{2}:\d{2}$/.test(almuerzo)||!Number.isFinite(minutos)||minutos<0||minutos>120||!Number.isInteger(minutos))error='Indica un horario válido y un descanso de 0 a 120 minutos.';
+  else if(descanso.length<2)error='Selecciona al menos dos días de descanso. Para jornadas especiales se necesita una configuración individual.';
+  else if(feriados.some(f=>!/^\d{4}-\d{2}-\d{2}$/.test(f)||Number.isNaN(new Date(f+'T12:00:00-05:00').getTime())||fechaEC(f+'T12:00:00-05:00')!==f))error='Usa fechas válidas AAAA-MM-DD separadas por comas.';
+  if(error){msg('calc-error',error);return;}
+  CFG={almuerzo,minutos,descanso,feriados:[...new Set(feriados)].sort()};
+  calculoConfirmado=true;msg('calc-error','');$('calc-estado').textContent='Parámetros aplicados a '+txtSemana()+'. Feriados: '+(CFG.feriados.join(', ')||'ninguno indicado')+'.';pintarAsistencia();
+};
 function quienesSemana(){
-  const ids=new Set();D.asig.forEach(a=>a.asis_asignacion_personas.forEach(p=>ids.add(p.trabajador_id)));D.marc.forEach(m=>ids.add(m.trabajador_id));
+  const ids=new Set();D.asig.forEach(a=>a.asis_asignacion_personas.forEach(p=>ids.add(p.trabajador_id)));D.marc.forEach(m=>{if(diasSemana().some(d=>fechaEC(m.marcado_en)===ymd(d)))ids.add(m.trabajador_id);});
   return D.trab.filter(t=>ids.has(t.id));
 }
 function grupoDe(t){const a=D.asig.find(a=>a.asis_asignacion_personas.some(p=>p.trabajador_id===t.id));return a?`${cuadPor(a.cuadrilla_id).nombre} · ${obraPor(a.obra_id)?.nombre||''} (PO ${obraPor(a.obra_id)?.po||'—'})`:'Sin designación esta semana';}
@@ -331,17 +455,17 @@ function pintarAsistencia(){
     h+=`<tr class="grp"><td colspan="9">${esc(g)}</td></tr>`;
     ts.forEach(t=>{let hs=0;
       h+=`<tr><td>${esc(t.nombre)}<br><span class="meta">${esc(t.rol)}</span></td>`;
-      ds.forEach(d=>{const f=ymd(d),x=diaDe(t.id,f);if(x.est==='ok'){val++;hs+=x.h;}else if(x.est!=='off')rev++;
+      ds.forEach(d=>{const f=ymd(d),x=liquidarDia(t,f);if(x.est==='ok'){val++;hs+=x.h;}else if(x.est!=='off')rev++;
         const txt=x.est==='off'?(x.ms.length?'rechazado':'—'):`${x.ent?horaLocal(x.ent.marcado_en):'sin entrada'}<br>${x.sal?horaLocal(x.sal.marcado_en):'sin salida'}`;
         h+=`<td><button class="cell st-${x.est}" data-t="${t.id}" data-f="${f}">${txt}</button></td>`;});
       tot+=hs;h+=`<td class="num">${hs.toFixed(1)}</td></tr>`;});
   });
   $('grid').innerHTML=h+'</tbody>';
-  // pago
-  let p=`<thead><tr><th>Trabajador</th><th>Cédula</th><th class="num">Días válidos</th><th class="num">Por revisar</th><th class="num">Tarifa</th><th class="num">A pagar</th><th>Forma de pago</th></tr></thead><tbody>`,T=0;
-  gente.forEach(t=>{let v=0,r=0;ds.forEach(d=>{const e=diaDe(t.id,ymd(d)).est;if(e==='ok')v++;else if(e!=='off')r++;});const pg=v*t.tarifa_diaria;T+=pg;
-    p+=`<tr><td>${esc(t.nombre)}</td><td class="mono">${esc(t.cedula||'—')}</td><td class="num">${v}</td><td class="num">${r||''}</td><td class="num">${money(t.tarifa_diaria)}</td><td class="num"><b>${money(pg)}</b></td><td>${t.tiene_cuenta?'<span class="tag st-ok">Transferencia</span>':'<span class="tag st-warn">Anticipo · sin cuenta</span>'}</td></tr>`;});
-  p+=`<tr class="grp"><td colspan="5">Total semana</td><td class="num">${money(T)}</td><td></td></tr>`;
+  // Pago y Excel comparten el mismo motor y redondeo por concepto/día.
+  let p=`<thead><tr><th>Trabajador</th><th class="num">Días válidos</th><th class="num">Por revisar</th><th class="num">Tarifa / 8 h</th><th class="num">Horas normales</th><th class="num">Horas 50%</th><th class="num">Horas 100%</th><th class="num">Normal</th><th class="num">Extras 50%</th><th class="num">Extras 100%</th><th class="num">Nocturno 25%</th><th class="num">Total bruto</th><th>Forma de pago / observaciones</th></tr></thead><tbody>`,T=0;
+  gente.forEach(t=>{const r=resumenTrabajador(t);T=redondear(T+r.total);
+    p+=`<tr><td>${esc(t.nombre)}<br><span class="meta">${esc(t.cedula||'—')}</span></td><td class="num">${r.v}</td><td class="num">${r.pend||''}</td><td class="num">${money(t.tarifa_diaria)}</td><td class="num">${r.hNorm.toFixed(2)}</td><td class="num">${r.h50.toFixed(2)}</td><td class="num">${r.h100.toFixed(2)}</td><td class="num">${money(r.vNorm)}</td><td class="num">${money(r.v50)}</td><td class="num">${money(r.v100)}</td><td class="num">${money(r.vNoche)}</td><td class="num"><b>${money(r.total)}</b></td><td>${t.tiene_cuenta?'Transferencia':'Anticipo · sin cuenta'}${r.alertas.length?'<br><span class="meta">'+esc(r.alertas.join('; '))+'</span>':''}</td></tr>`;});
+  p+=`<tr class="grp"><td colspan="11">Total bruto semana${calculoConfirmado?'':' · preliminar'}</td><td class="num">${money(T)}</td><td></td></tr>`;
   $('pago').innerHTML=p+'</tbody>';
   const hoy=ymd(new Date()),enObra=gente.filter(t=>diaDe(t.id,hoy).ent).length;
   $('kpis').innerHTML=`<div class="kpi"><div class="l">En obra hoy</div><div class="v">${enObra}/${gente.length}</div></div>
@@ -354,7 +478,7 @@ async function detalle(tid,f){
   const t=D.trab.find(x=>x.id===tid),x=diaDe(tid,f),box=$('sheet-box');
   if(!x.ms.length){box.innerHTML=`<h2>${esc(t.nombre)} · ${f}</h2><p class="msg warn">No marcó este día.</p><button class="btn ghost" id="cl">Cerrar</button>`;$('sheet').hidden=false;$('cl').onclick=cerrar;return;}
   box.innerHTML=`<h2>${esc(t.nombre)} · ${f}</h2>
-    <div class="card"><strong>Foto de referencia</strong>${t.foto_ref_path?'<img id="imgRef" alt="Foto de referencia">':'<p class="msg warn">Esta persona aún no tiene foto de referencia. Usa una selfie que tú hayas visto tomar en persona.</p>'}</div>`+x.ms.map((m,i)=>{const o=obraPor(m.obra_id);return `
+    <p class="meta">${esc(x.motivo||'Marcaciones completas')} · Horas efectivas: ${x.h.toFixed(2)} · Almuerzo descontado: ${x.descanso.toFixed(2)} h</p><div class="card"><strong>Foto de referencia</strong>${t.foto_ref_path?'<img id="imgRef" alt="Foto de referencia">':'<p class="msg warn">Esta persona aún no tiene foto de referencia. Usa una selfie que tú hayas visto tomar en persona.</p>'}</div>`+x.ms.map((m,i)=>{const o=obraPor(m.obra_id);return `
     <div class="card"><strong>${m.tipo==='entrada'?'Entrada':'Salida'} · ${horaLocal(m.marcado_en)}</strong>
     <img id="img${i}" alt="Selfie de ${esc(t.nombre)}">
     <div><button class="btn ghost sm" data-ref="${esc(m.foto_path||'')}">Usar como foto de referencia</button></div>
@@ -376,7 +500,8 @@ async function detalle(tid,f){
     if(error)return toast(error.message);t.foto_ref_path=b.dataset.ref;t.rostro_ref=desc;toast('Foto de referencia guardada');detalle(tid,f);});
   const rev=async v=>{const {data:{user}}=await sb.auth.getUser();const {error}=await sb.from('asis_marcaciones').update({revision:v,revisado_por:user.id}).in('id',x.ms.map(m=>m.id));
     if(error)return toast('No se pudo guardar: '+error.message);cerrar();toast(v==='aprobado'?'Día aprobado':'Día rechazado');cargar();};
-  $('aprob').onclick=()=>rev('aprobado');$('rech').onclick=()=>rev('rechazado');
+  $('aprob').disabled=x.est==='warn';$('aprob').title=x.est==='warn'?'Corrige las marcaciones antes de aprobar':'';
+  $('aprob').onclick=()=>{if(x.est==='warn')return toast(x.motivo);rev('aprobado');};$('rech').onclick=()=>rev('rechazado');
   if($('borrar'))$('borrar').onclick=async()=>{const bt=$('borrar');
     if(bt.dataset.ok!=='1'){bt.dataset.ok='1';bt.textContent='Toca otra vez para borrar';return;}
     const fotos=x.ms.map(m=>m.foto_path).filter(Boolean);
@@ -391,28 +516,41 @@ $('sheet').addEventListener('click',e=>{if(e.target.id==='sheet')cerrar();});
 const EST={ok:'Válido',warn:'Falta marcación',bad:'Fuera de obra',off:'No marcó'};
 $('excel').onclick=()=>{
   if(typeof XLSX==='undefined')return toast('No se cargó el generador de Excel. Revisa tu conexión y recarga.');
+  if(!calculoConfirmado)return toast('Aplica los parámetros de almuerzo, descansos y feriados antes de descargar.');
   const ds=diasSemana(),gente=filtrados(),hl=ts=>ts?horaLocal(ts):'';
-  const resumen=[],detalle=[],marcas=[];
+  const resumen=[],detalle=[],marcas=[],vistos=new Set();
   gente.forEach(t=>{
-    const o=obraDeT(t);let v=0,r=0,hs=0;
-    ds.forEach(d=>{const f=ymd(d),x=diaDe(t.id,f);
-      if(x.est==='ok'){v++;hs+=x.h||0;}else if(x.est!=='off')r++;
-      detalle.push({'Fecha':f,'Día':d.toLocaleDateString('es-EC',{weekday:'long'}),'Cuadrilla':cuaDe(t),'Obra':o?o.nombre:'','PO':o?o.po||'':'','Trabajador':t.nombre,'Cédula':t.cedula||'',
-        'Entrada':x.ent?hl(x.ent.marcado_en):'','Salida':x.sal?hl(x.sal.marcado_en):'','Horas':x.h?Number(x.h.toFixed(2)):0,'Estado':x.ap?'Aprobado por RR.HH.':EST[x.est],
-        'Pagable':x.est==='ok'?'Sí':'No','Valor':x.est==='ok'?Number(t.tarifa_diaria):0});
-      x.ms.forEach(m=>{const om=obraPor(m.obra_id);marcas.push({'Fecha':f,'Hora':hl(m.marcado_en),'Tipo':m.tipo,'Trabajador':t.nombre,'Cédula':t.cedula||'','Cuadrilla':cuaDe(t),
+    const r=resumenTrabajador(t);
+    r.dias.forEach(x=>{const f=x.fecha,obras=[...new Set(x.ps.map(p=>{const o=obraPor(p.ent.obra_id);return o?o.nombre+' (PO '+(o.po||'—')+')':'Sin obra';}))];
+      detalle.push({'Fecha':f,'Día':new Date(f+'T12:00:00-05:00').toLocaleDateString('es-EC',{weekday:'long',timeZone:'America/Guayaquil'}),'Cuadrilla':cuaDe(t),'Obras de marcación':obras.join('; '),'Trabajador':t.nombre,'Cédula':t.cedula||'',
+        'Entrada':x.ent?fechaEC(x.ent.marcado_en)+' '+hl(x.ent.marcado_en):'','Salida':x.sal?fechaEC(x.sal.marcado_en)+' '+hl(x.sal.marcado_en):'',
+        'Horas registradas':redondear(x.h),'Almuerzo descontado (h)':redondear(x.descanso),'Horas normales pagables':redondear(x.hNorm),'Horas 50% pagables':redondear(x.h50),'Horas 100% pagables':redondear(x.h100),'Horas nocturnas ordinarias':redondear(x.hNoche),
+        'Estado':x.est==='ok'?(x.ap?'Aprobado por RR.HH.':'Válido'):EST[x.est],'Pagable':x.est==='ok'?'Sí':'No','Valor hora':Number(t.tarifa_diaria)/8,'Valor normal':x.vNorm,'Valor 50%':x.v50,'Valor 100%':x.v100,'Adicional nocturno 25%':x.vNoche,'Total bruto':x.total,'Observaciones':[x.motivo,...x.alertas].filter(Boolean).join('; ')});
+      x.ms.forEach(m=>{if(vistos.has(m.id))return;vistos.add(m.id);const om=obraPor(m.obra_id);marcas.push({'Fecha':fechaEC(m.marcado_en),'Hora':hl(m.marcado_en),'Tipo':m.tipo,'Trabajador':t.nombre,'Cédula':t.cedula||'','Cuadrilla':cuaDe(t),
         'Obra':om?om.nombre:'Sin obra','PO':om?om.po||'':'','Distancia (m)':m.distancia_m,'Dentro de obra':m.dentro==null?'':(m.dentro?'Sí':'No'),
-        'Precisión GPS (m)':m.precision_m!=null?Math.round(m.precision_m):'','Latitud':m.lat,'Longitud':m.lng,'Rostro':m.rostro_estado?(ROSTRO[m.rostro_estado]||[0,m.rostro_estado])[1]:'','Distancia rostro':m.rostro_dist!=null?Number(m.rostro_dist).toFixed(2):'','Revisión':m.revision,'Equipo':(m.dispositivo||'').split(' · ')[0]});});
+        'Precisión GPS (m)':m.precision_m!=null?Math.round(m.precision_m):'','Latitud':m.lat,'Longitud':m.lng,'Rostro':m.rostro_estado?(ROSTRO[m.rostro_estado]||[0,m.rostro_estado])[1]:'','Revisión':m.revision,'Equipo':(m.dispositivo||'').split(' · ')[0]});});
     });
-    resumen.push({'Cuadrilla':cuaDe(t),'Obra':o?o.nombre:'','PO':o?o.po||'':'','Trabajador':t.nombre,'Cédula':t.cedula||'','Rol':t.rol,'Días válidos':v,'Por revisar':r,
-      'Horas':Number(hs.toFixed(2)),'Tarifa diaria':Number(t.tarifa_diaria),'A pagar':v*t.tarifa_diaria,'Forma de pago':t.tiene_cuenta?'Transferencia':'Anticipo (sin cuenta)'});
+    resumen.push({'Cuadrilla':cuaDe(t),'Trabajador':t.nombre,'Cédula':t.cedula||'','Rol':t.rol,'Días válidos':r.v,'Por revisar':r.pend,'Horas pagables':redondear(r.horas),
+      'Horas normales':redondear(r.hNorm),'Horas 50%':redondear(r.h50),'Horas 100%':redondear(r.h100),'Horas nocturnas ordinarias':redondear(r.hNoche),'Tarifa diaria (8 h)':Number(t.tarifa_diaria),'Valor hora':Number(t.tarifa_diaria)/8,
+      'Valor normal':r.vNorm,'Valor 50%':r.v50,'Valor 100%':r.v100,'Adicional nocturno 25%':r.vNoche,'Total bruto':r.total,'Forma de pago':t.tiene_cuenta?'Transferencia':'Anticipo (sin cuenta)','Observaciones':r.alertas.join('; ')});
   });
   if(!resumen.length)return toast('No hay datos para descargar con estos filtros.');
+  const total=redondear(resumen.reduce((n,r)=>n+r['Total bruto'],0));
+  resumen.push({'Trabajador':'TOTAL SEMANA','Total bruto':total});
+  const parametros=[
+    {Parámetro:'Motor',Valor:CALC_VERSION},{Parámetro:'Semana',Valor:ymd(ds[0])+' a '+ymd(ds[6])},{Parámetro:'Fecha de generación',Valor:new Date().toISOString()},
+    {Parámetro:'Base',Valor:'Jornal por 8 horas; valor hora = tarifa diaria / 8'},
+    {Parámetro:'Almuerzo',Valor:CFG.almuerzo+'; '+CFG.minutos+' minutos. Solo coincidencia con horario trabajado; con varios pares se respetan pausas registradas.'},
+    {Parámetro:'Descanso obligatorio',Valor:CFG.descanso.map(i=>diasNombre[i]).join(', ')},{Parámetro:'Feriados indicados por RRHH',Valor:CFG.feriados.join(', ')||'Ninguno indicado'},
+    {Parámetro:'Recargos',Valor:'Suplementarias ×1,5; extraordinarias ×2; nocturnas ordinarias adicional ×0,25'},
+    {Parámetro:'Redondeo',Valor:'2 decimales por concepto y día; total semanal = suma de valores diarios'},
+    {Parámetro:'Marcaciones incompletas',Valor:'No pagables hasta corregir; aprobación no sustituye horarios'},
+    {Parámetro:'Alcance',Valor:'Total bruto de jornal y recargos por horas; antes de descuentos, anticipos y beneficios laborales'},
+    {Parámetro:'Cuadrilla seleccionada',Valor:FILT.cua||'Todas'},{Parámetro:'Empleado seleccionado',Valor:gente.length===1?gente[0].nombre:'Varios'}
+  ];
   const wb=XLSX.utils.book_new();
-  const hoja=(rows,nombre,anchos)=>{const ws=XLSX.utils.json_to_sheet(rows);ws['!autofilter']={ref:ws['!ref']};ws['!cols']=anchos.map(w=>({wch:w}));XLSX.utils.book_append_sheet(wb,ws,nombre);};
-  hoja(resumen,'Resumen pago',[22,24,8,34,12,10,12,11,8,12,10,20]);
-  hoja(detalle,'Detalle diario',[11,11,22,24,8,34,12,8,8,7,20,8,8]);
-  hoja(marcas.length?marcas:[{'Fecha':'Sin marcaciones'}],'Marcaciones',[11,7,8,34,12,22,24,8,12,13,15,11,11,10,12]);
+  const hoja=(rows,nombre)=>{const ws=XLSX.utils.json_to_sheet(rows);ws['!autofilter']={ref:ws['!ref']};ws['!cols']=Object.keys(rows[0]).map(k=>({wch:Math.max(12,Math.min(40,k.length+4))}));XLSX.utils.book_append_sheet(wb,ws,nombre);};
+  hoja(resumen,'Resumen pago');hoja(detalle,'Detalle diario');hoja(marcas.length?marcas:[{'Fecha':'Sin marcaciones'}],'Marcaciones');hoja(parametros,'Base de cálculo');
   const sufijo=(FILT.cua?'_'+FILT.cua:'')+(FILT.emp?'_'+(D.trab.find(t=>String(t.id)===FILT.emp)||{}).nombre:'');
   XLSX.writeFile(wb,`Asistencia_${ymd(ds[0])}_a_${ymd(ds[6])}${sufijo}.xlsx`.replace(/[\\/:*?"<>|]/g,'').replace(/\s+/g,'_'));
 };
@@ -623,3 +761,4 @@ iniciar();
 </script>
 </body>
 </html>
+
